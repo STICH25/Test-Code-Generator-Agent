@@ -1,0 +1,41 @@
+PlaywrightAgentAI
+│
+├── Agents
+│   ExplorationAgent.cs
+│
+├── Models
+│   ExplorationRequest.cs
+│   DomSnapshot.cs
+│   AgentResult.cs
+│
+├── Services
+│   HtmlAnalyzer.cs
+│   TestCodeBuilder.cs
+│
+├── Tools
+│   DomExplorer.cs
+│
+├── Program.cs
+└── PlaywrightAgentAI.csproj
+
+
+Architecture for Prompt-Driven Agent
+User Prompt
+    │
+    ▼
+Playwright Page Load
+    │
+    ▼
+DOM Extraction
+    │
+    ▼
+DOM Analysis
+    │
+    ▼
+Prompt Builder
+    │
+    ▼
+LLM Code Generator
+    │
+    ▼
+Playwright Test Code
