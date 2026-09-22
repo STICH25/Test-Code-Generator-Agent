@@ -5,5 +5,14 @@
     <Compile Update="Forms\MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Update="Forms\NoScrollFlowLayoutPanel.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Forms\RoundedScrollbar.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Update="Forms\RoundedScrollTextEditor.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
   </ItemGroup>
 </Project>

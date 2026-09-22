@@ -12,6 +12,10 @@ public class ExplorationAgent
     private readonly HtmlAnalyzer _analyzer = new();
     private readonly TestCodeBuilder _builder = new();
     private readonly AICodeGenerator? _aiGenerator;
+    private readonly GherkinBuilder _gherkinBuilder = new();
+
+    private const string PlaywrightMarker = "<<<PLAYWRIGHT>>>";
+    private const string GherkinMarker = "<<<GHERKIN>>>";
 
     public ExplorationAgent(AICodeGenerator? aiGenerator = null)
     {
@@ -41,6 +45,9 @@ public class ExplorationAgent
                 Console.WriteLine($"Found {dom.SectionHtml.Count} section(s): {string.Join(", ", dom.SectionHtml.Keys)}");
             }
 
+            string generatedCode;
+            string gherkinOutput = string.Empty;
+
             if (_aiGenerator != null && !string.IsNullOrWhiteSpace(request.TestObjective))
             {
                 try
@@ -54,28 +61,65 @@ public class ExplorationAgent
                     };
 
                     var prompt = promptBuilder.Build(userRequest, dom);
-                    var code = await _aiGenerator.Generate(prompt);
+                    var aiResponse = await _aiGenerator.Generate(prompt);
 
-                    if (string.IsNullOrWhiteSpace(code))
+                    // Parse AI response using strict markers.
+                    if (!string.IsNullOrWhiteSpace(aiResponse) &&
+                        aiResponse.Contains(PlaywrightMarker) &&
+                        aiResponse.Contains(GherkinMarker))
                     {
-                        Console.Error.WriteLine("Warning: AI generated empty code. Falling back to basic template.");
-                        return new AgentResult { GeneratedCode = _builder.Build(request.Url, dom) };
-                    }
+                        var pStart = aiResponse.IndexOf(PlaywrightMarker, StringComparison.Ordinal) + PlaywrightMarker.Length;
+                        var gStart = aiResponse.IndexOf(GherkinMarker, StringComparison.Ordinal);
 
-                    return new AgentResult { GeneratedCode = code };
+                        if (gStart > pStart)
+                        {
+                            generatedCode = aiResponse.Substring(pStart, gStart - pStart).Trim();
+                            gherkinOutput = aiResponse.Substring(gStart + GherkinMarker.Length).Trim();
+                        }
+                        else
+                        {
+                            // Unexpected order — fall back to full response as code
+                            generatedCode = aiResponse.Trim();
+                        }
+                    }
+                    else
+                    {
+                        // AI didn't follow markers; treat full response as Playwright code
+                        generatedCode = string.IsNullOrWhiteSpace(aiResponse) ? _builder.Build(request.Url, dom) : aiResponse;
+                    }
                 }
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"Error: AI code generation failed: {ex.Message}");
                     Console.Error.WriteLine("Falling back to basic template...");
-                    return new AgentResult { GeneratedCode = _builder.Build(request.Url, dom) };
+                    generatedCode = _builder.Build(request.Url, dom);
+                }
+            }
+            else
+            {
+                Console.WriteLine("Using basic template (AI not available or no test objective)");
+                generatedCode = _builder.Build(request.Url, dom);
+            }
+
+            // If Gherkin was requested and AI did not provide it, build locally as a fallback.
+            if (request.IncludeGherkin && string.IsNullOrWhiteSpace(gherkinOutput) && !string.IsNullOrWhiteSpace(request.TestObjective))
+            {
+                try
+                {
+                    var (featureStep, stepDefinition) = _gherkinBuilder.Build(request.TestObjective, request.GherkinKeyword ?? "Given");
+                    gherkinOutput = $"# Feature Step\n{featureStep}\n\n# Step Definition\n{stepDefinition}";
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Warning: Failed to build local Gherkin: {ex.Message}");
                 }
             }
 
-            Console.WriteLine("Using basic template (AI not available or no test objective)");
-            var basicCode = _builder.Build(request.Url, dom);
-
-            return new AgentResult { GeneratedCode = basicCode };
+            return new AgentResult
+            {
+                GeneratedCode = generatedCode,
+                GherkinOutput = gherkinOutput
+            };
         }
         catch (Exception ex)
         {
