@@ -1,0 +1,34 @@
+
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+	<OutputType>WinExe</OutputType>
+	<TargetFramework>net9.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+	<Nullable>enable</Nullable>
+	<UseWindowsForms>true</UseWindowsForms>
+	<LangVersion>latest</LangVersion>
+	<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+	<ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<PackageReference Include="Anthropic" Version="12.44.0" />
+	<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.58.0" />
+    <PackageReference Include="AngleSharp" Version="1.7.2" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+  </ItemGroup>  
+
+  <!-- Embedded so the forms can load the multi-size icon at runtime; ApplicationIcon
+       above only stamps the icon onto the .exe itself. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\app.ico" />
+  </ItemGroup>
+
+  <!-- Surfaced in Solution Explorer; markdown is not part of a build otherwise. -->
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="CLAUDE.md" />
+  </ItemGroup>
+
+</Project>

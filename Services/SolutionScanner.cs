@@ -1,0 +1,235 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace PlaywrightAgentAI.Services;
+
+/// <summary>
+/// Reads a test-automation solution and works out its conventions.
+///
+/// Regex over source rather than a Roslyn workspace: the app only needs class names,
+/// base types and a sample file, and pulling in the compiler platform to get them would
+/// be a heavy dependency for a shallow read. Everything here is read-only.
+/// </summary>
+public static partial class SolutionScanner
+{
+    private const int MaxExampleLength = 4000;
+    private const int MaxBaseClassLength = 4000;
+
+    public static SolutionProfile Scan(string rootPath)
+    {
+        var profile = new SolutionProfile { RootPath = rootPath };
+
+        if (!Directory.Exists(rootPath))
+        {
+            profile.Notes.Add($"Folder not found: {rootPath}");
+            return profile;
+        }
+
+        var sources = EnumerateSources(rootPath).ToList();
+        if (sources.Count == 0)
+        {
+            profile.Notes.Add("No C# source files found in that folder.");
+            return profile;
+        }
+
+        profile.ProjectFile = Directory
+            .EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories)
+            .FirstOrDefault(p => !IsBuildOutput(p));
+
+        var files = sources
+            .Select(path => (Path: path, Text: ReadSafe(path)))
+            .Where(f => f.Text.Length > 0)
+            .ToList();
+
+        DetectBaseClass(files, profile);
+        DetectHelpers(files, profile);
+        DetectExampleTest(files, profile);
+        DetectBaseUrl(rootPath, profile);
+        DetectGherkin(rootPath, files, profile);
+
+        if (profile.BaseClassName == null)
+            profile.Notes.Add("No abstract test base class found; generated tests will set up their own browser.");
+
+        if (profile.ExampleTestSource == null)
+            profile.Notes.Add("No existing test found to imitate; generation will rely on the base class alone.");
+
+        return profile;
+    }
+
+    private static IEnumerable<string> EnumerateSources(string root) =>
+        Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories).Where(p => !IsBuildOutput(p));
+
+    private static bool IsBuildOutput(string path) =>
+        path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains($"{Path.DirectorySeparatorChar}.vs{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase);
+
+    private static string ReadSafe(string path)
+    {
+        try
+        {
+            return File.ReadAllText(path);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// The base class is an abstract class deriving from one of Playwright's NUnit bases.
+    /// That is the thing generated tests should inherit, so it is worth finding precisely.
+    /// </summary>
+    private static void DetectBaseClass(List<(string Path, string Text)> files, SolutionProfile profile)
+    {
+        foreach (var (path, text) in files)
+        {
+            var match = AbstractTestBase().Match(text);
+            if (!match.Success)
+                continue;
+
+            profile.BaseClassName = match.Groups["name"].Value;
+            profile.BaseClassSource = Truncate(text, MaxBaseClassLength);
+
+            var ns = NamespaceDeclaration().Match(text);
+            if (ns.Success)
+                profile.TestNamespace = ns.Groups["ns"].Value;
+
+            profile.Notes.Add($"Base class {profile.BaseClassName} found in {Path.GetFileName(path)}.");
+            return;
+        }
+    }
+
+    private static void DetectHelpers(List<(string Path, string Text)> files, SolutionProfile profile)
+    {
+        foreach (var (_, text) in files)
+        {
+            foreach (Match match in StaticHelperClass().Matches(text))
+            {
+                var name = match.Groups["name"].Value;
+                if (!profile.Helpers.Contains(name))
+                    profile.Helpers.Add(name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Picks the richest existing test as a few-shot example, preferring one that already
+    /// derives from the detected base class.
+    /// </summary>
+    private static void DetectExampleTest(List<(string Path, string Text)> files, SolutionProfile profile)
+    {
+        var candidates = files
+            .Where(f => f.Text.Contains("[Test]", StringComparison.Ordinal))
+            .Select(f => new
+            {
+                f.Path,
+                f.Text,
+                TestCount = Regex.Matches(f.Text, @"\[Test\]").Count,
+                UsesBase = profile.BaseClassName != null &&
+                           Regex.IsMatch(f.Text, $@":\s*{Regex.Escape(profile.BaseClassName)}\b")
+            })
+            .OrderByDescending(f => f.UsesBase)
+            .ThenByDescending(f => f.TestCount)
+            .ToList();
+
+        var chosen = candidates.FirstOrDefault();
+        if (chosen == null)
+            return;
+
+        profile.ExampleTestName = Path.GetFileNameWithoutExtension(chosen.Path);
+        profile.ExampleTestSource = Truncate(chosen.Text, MaxExampleLength);
+        profile.TestDirectory = Path.GetDirectoryName(chosen.Path) ?? profile.RootPath;
+
+        var ns = NamespaceDeclaration().Match(chosen.Text);
+        if (ns.Success)
+            profile.TestNamespace = ns.Groups["ns"].Value;
+    }
+
+    /// <summary>
+    /// Works out whether this solution is a BDD suite and where its pieces live.
+    ///
+    /// Reqnroll generates a .feature.cs beside every .feature file; those are build output
+    /// in spirit, so the [Binding] class search deliberately looks for the attribute rather
+    /// than for file names.
+    /// </summary>
+    private static void DetectGherkin(string rootPath, List<(string Path, string Text)> files, SolutionProfile profile)
+    {
+        var projectText = profile.ProjectFile != null ? ReadSafe(profile.ProjectFile) : string.Empty;
+
+        profile.SupportsGherkin =
+            projectText.Contains("Reqnroll", StringComparison.OrdinalIgnoreCase) ||
+            projectText.Contains("SpecFlow", StringComparison.OrdinalIgnoreCase) ||
+            files.Any(f => f.Text.Contains("using Reqnroll", StringComparison.Ordinal) ||
+                           f.Text.Contains("using TechTalk.SpecFlow", StringComparison.Ordinal));
+
+        profile.Features.AddRange(GherkinAssets.FindFeatures(rootPath));
+        profile.StepBindings.AddRange(GherkinAssets.FindStepBindings(rootPath));
+
+        profile.FeaturesDirectory =
+            GherkinAssets.FindDirectoryContaining(rootPath, "*.feature")
+            ?? (profile.SupportsGherkin ? Path.Combine(rootPath, "Features") : null);
+
+        // Prefer the folder that actually holds a [Binding] class; fall back to a
+        // conventional name so a first generation still has somewhere to go.
+        var bindingFile = files.FirstOrDefault(f =>
+            f.Text.Contains("[Binding]", StringComparison.Ordinal) &&
+            StepAttributePresent(f.Text));
+
+        if (bindingFile.Path != null)
+        {
+            profile.StepDefinitionsDirectory = Path.GetDirectoryName(bindingFile.Path);
+            profile.StepClassSource = Truncate(bindingFile.Text, MaxExampleLength);
+            profile.StepClassName = Path.GetFileNameWithoutExtension(bindingFile.Path);
+        }
+        else if (profile.SupportsGherkin)
+        {
+            profile.StepDefinitionsDirectory = Path.Combine(rootPath, "StepDefinitions");
+        }
+
+        if (profile.SupportsGherkin)
+        {
+            profile.Notes.Add(
+                $"Gherkin suite: {profile.Features.Count} feature file(s), {profile.StepBindings.Count} existing step binding(s).");
+        }
+    }
+
+    private static bool StepAttributePresent(string text) =>
+        text.Contains("[Given(", StringComparison.Ordinal) ||
+        text.Contains("[When(", StringComparison.Ordinal) ||
+        text.Contains("[Then(", StringComparison.Ordinal) ||
+        text.Contains("[StepDefinition(", StringComparison.Ordinal);
+
+    private static void DetectBaseUrl(string rootPath, SolutionProfile profile)
+    {
+        var settingsPath = Path.Combine(rootPath, "appsettings.json");
+        if (!File.Exists(settingsPath))
+            return;
+
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(settingsPath));
+            if (document.RootElement.TryGetProperty("Playwright", out var playwright) &&
+                playwright.TryGetProperty("BaseUrl", out var baseUrl))
+            {
+                profile.BaseUrl = baseUrl.GetString();
+            }
+        }
+        catch (Exception ex)
+        {
+            profile.Notes.Add($"Could not read appsettings.json: {ex.Message}");
+        }
+    }
+
+    private static string Truncate(string text, int limit) =>
+        text.Length <= limit ? text : text[..limit] + "\n// ... [truncated]";
+
+    [GeneratedRegex(@"public\s+abstract\s+(?:partial\s+)?class\s+(?<name>\w+)\s*:\s*\w*(?:PlaywrightTest|PageTest|BrowserTest|ContextTest)\b")]
+    private static partial Regex AbstractTestBase();
+
+    [GeneratedRegex(@"namespace\s+(?<ns>[\w.]+)\s*[;{]")]
+    private static partial Regex NamespaceDeclaration();
+
+    [GeneratedRegex(@"public\s+static\s+class\s+(?<name>\w+)")]
+    private static partial Regex StaticHelperClass();
+}
