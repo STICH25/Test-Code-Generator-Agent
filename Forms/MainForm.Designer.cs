@@ -6,9 +6,11 @@ partial class MainForm
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing && (components != null))
+        if (disposing)
         {
-            components.Dispose();
+            components?.Dispose();
+            _cts?.Dispose();
+            _webViewRegion?.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -16,6 +18,23 @@ partial class MainForm
     private void InitializeComponent()
     {
         components = new System.ComponentModel.Container();
-        this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+
+        SuspendLayout();
+
+        // AutoScaleDimensions must accompany AutoScaleMode.Font, otherwise the form is
+        // rescaled against an unknown baseline on high-DPI displays.
+        AutoScaleDimensions = new SizeF(7F, 15F);
+        AutoScaleMode = AutoScaleMode.Font;
+        Font = UI.Theme.Ui(9F);
+
+        ClientSize = new Size(1400, 940);
+        MinimumSize = new Size(940, 740);
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = UI.Theme.Page;
+        ForeColor = UI.Theme.TextPrimary;
+        Text = "Playwright Test Generator";
+        Name = "MainForm";
+
+        ResumeLayout(false);
     }
 }

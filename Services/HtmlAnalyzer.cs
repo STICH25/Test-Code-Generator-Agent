@@ -185,41 +185,92 @@ public class HtmlAnalyzer
         }
     }
 
+    // Words that carry no signal about which part of the page a test objective refers to.
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "verify", "check", "ensure", "confirm", "validate", "test", "should", "must",
+        "that", "this", "with", "from", "into", "have", "has", "the", "and", "for",
+        "are", "is", "of", "on", "in", "at", "to", "a", "an", "all", "each", "every",
+        "page", "site", "element", "elements", "section", "sections", "displays",
+        "display", "shows", "show", "visible", "correctly", "least", "one", "items",
+        "item", "lists", "list", "contains", "contain", "its", "it"
+    };
+
+    /// <summary>
+    /// Finds the part of the page a test objective is talking about.
+    ///
+    /// The previous version searched for the entire objective sentence as a literal
+    /// substring of a heading, which essentially never matched - and when it did fall
+    /// through to scanning every element, the first hit was &lt;html&gt;, whose text contains
+    /// the whole document. Scoring headings by how many meaningful words they share with
+    /// the objective is what actually locates the right section.
+    /// </summary>
     private void TryExtractTargetSection(IDocument document, DomSnapshot snapshot, string targetPhrase)
     {
         try
         {
-            var phrase = targetPhrase.Trim().ToLowerInvariant();
+            var keywords = ExtractKeywords(targetPhrase);
+            if (keywords.Count == 0)
+            {
+                Console.WriteLine("Test objective had no distinctive words to match against the page.");
+                return;
+            }
 
-            // Prefer exact heading matches first
-            var headingMatch = document.QuerySelectorAll("h1, h2, h3, h4, h5, h6")
-                .FirstOrDefault(h => h.TextContent?.Trim().ToLowerInvariant().Contains(phrase) == true);
+            Console.WriteLine($"Matching page against keywords: {string.Join(", ", keywords)}");
 
-            var found = headingMatch as IElement;
-
-            // If no heading, search other textual elements
-            found ??= document.All
+            var best = document.QuerySelectorAll("h1, h2, h3, h4, h5, h6")
                 .OfType<IElement>()
-                .FirstOrDefault(e => e.TextContent?.Trim().ToLowerInvariant().Contains(phrase) == true);
-
-            if (found != null)
-            {
-                var container = FindContainer(found);
-                if (container != null)
+                .Select(heading => new
                 {
-                    PopulateSectionSnapshot(snapshot, container, phrase);
-                    Console.WriteLine($"Extracted target section '{phrase}' with selector '{snapshot.SectionSelectors?.GetValueOrDefault(phrase) ?? "N/A"}' and {(snapshot.SectionItems?.GetValueOrDefault(phrase, new()).Count ?? 0)} items.");
-                }
-            }
-            else
+                    Heading = heading,
+                    Text = heading.TextContent?.Trim() ?? "",
+                    Score = ScoreAgainst(heading.TextContent, keywords)
+                })
+                .Where(x => x.Score > 0 && x.Text.Length is > 0 and <= 100)
+                .OrderByDescending(x => x.Score)
+                .ThenBy(x => x.Text.Length)
+                .FirstOrDefault();
+
+            if (best == null)
             {
-                Console.WriteLine($"No DOM element found matching target phrase '{targetPhrase}'.");
+                Console.WriteLine("No heading matched the objective; falling back to a general page scan.");
+                return;
             }
+
+            var container = FindContainer(best.Heading);
+            if (container == null)
+                return;
+
+            var key = best.Text.ToLowerInvariant();
+            PopulateSectionSnapshot(snapshot, container, key);
+
+            Console.WriteLine(
+                $"Matched objective to section '{best.Text}' (score {best.Score}) " +
+                $"with selector '{snapshot.SectionSelectors.GetValueOrDefault(key) ?? "n/a"}'.");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Warning: TryExtractTargetSection failed: {ex.Message}");
         }
+    }
+
+    private static readonly char[] WordSeparators =
+        " \t\r\n,.;:!?\"'()[]{}/".ToCharArray();
+
+    private static List<string> ExtractKeywords(string phrase) =>
+        phrase.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries)
+            .Select(w => w.Trim().ToLowerInvariant())
+            .Where(w => w.Length > 2 && !StopWords.Contains(w))
+            .Distinct()
+            .ToList();
+
+    private static int ScoreAgainst(string? text, List<string> keywords)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return 0;
+
+        var lowered = text.ToLowerInvariant();
+        return keywords.Count(k => lowered.Contains(k, StringComparison.Ordinal));
     }
 
     private string ExtractSectionIdentifier(IElement container)

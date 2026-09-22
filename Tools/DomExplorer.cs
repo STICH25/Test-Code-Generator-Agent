@@ -1,5 +1,6 @@
 using Microsoft.Playwright;
 using System;
+using System.Threading;
 
 namespace PlaywrightAgentAI.Tools;
 
@@ -7,10 +8,12 @@ public class DomExplorer
 {
     private const int TimeoutMs = 30000; // 30 seconds
 
-    public async Task<string> CaptureDom(string url)
+    public async Task<string> CaptureDom(string url, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL cannot be null or empty.", nameof(url));
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         IPlaywright? playwright = null;
         IBrowser? browser = null;
@@ -26,6 +29,8 @@ public class DomExplorer
                 Headless = true
             });
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             page = await browser.NewPageAsync();
 
             page.SetDefaultTimeout(TimeoutMs);
@@ -39,21 +44,26 @@ public class DomExplorer
                 WaitUntil = WaitUntilState.DOMContentLoaded
             });
 
-            // Give dynamic sites a moment to settle (optional)
-            await page.WaitForTimeoutAsync(1500);
+            // Give dynamic sites a moment to settle (optional). Task.Delay rather than
+            // WaitForTimeoutAsync so a cancel during the settle window takes effect at once.
+            await Task.Delay(1500, cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             Console.WriteLine("Capturing DOM content...");
             var content = await page.ContentAsync();
 
             return content;
         }
-        catch (TimeoutException ex)
+        catch (OperationCanceledException)
         {
-            Console.Error.WriteLine($"Timeout loading {url}: {ex.Message}");
-            throw new Exception($"Timeout loading {url}. The site may never reach an idle state.");
+            Console.WriteLine("DOM capture cancelled.");
+            throw;
         }
         catch (PlaywrightException ex)
         {
+            // Playwright signals navigation timeouts through PlaywrightException, not
+            // System.TimeoutException, so both cases land here.
             Console.Error.WriteLine($"Playwright error navigating to {url}: {ex.Message}");
             throw;
         }
