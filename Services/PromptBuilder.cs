@@ -1,89 +1,320 @@
-﻿using PlaywrightAgentAI.Models;
+using System.Text;
+using PlaywrightAgentAI.Models;
 
 namespace PlaywrightAgentAI.Services;
 
+/// <summary>
+/// Builds the generation prompt.
+///
+/// When a test solution is linked, the prompt asks for a test in that solution's house
+/// style - deriving from its base class, using its helpers, in its namespace - with a real
+/// existing test supplied as the example to imitate. Without a linked solution it falls
+/// back to a self-contained test.
+///
+/// The previous prompt asked for code that could not work: it told the model to create its
+/// own browser and page but forbade calling GotoAsync, so the generated test asserted
+/// against a blank page. It also hardcoded selectors from one specific site while telling
+/// the model not to invent selectors.
+/// </summary>
 public class PromptBuilder
 {
-    public string Build(UserPromptRequest request, DomSnapshot dom)
-    {
-        var inputs = string.Join(", ", dom.Inputs);
-        var buttons = string.Join(", ", dom.Buttons);
-        var links = string.Join(", ", dom.Links);
-        var headings = string.Join(", ", dom.Headings);
-        var elements = string.Join(", ", dom.Elements.Distinct());
+    private const int MaxSections = 6;
+    private const int MaxItemsPerList = 40;
 
-        // Build section HTML info
-        var sectionInfo = new System.Text.StringBuilder();
-        foreach (var section in dom.SectionHtml)
+    public string Build(
+        UserPromptRequest request,
+        DomSnapshot dom,
+        SolutionProfile? profile = null,
+        IReadOnlyList<RecordedAction>? recordedActions = null,
+        FeatureFile? targetFeature = null)
+    {
+        var prompt = new StringBuilder();
+
+        prompt.AppendLine("Write a Playwright test in C# for the page described below.");
+        prompt.AppendLine();
+        prompt.AppendLine($"TARGET URL: {request.Url}");
+        prompt.AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(request.Action))
         {
-            sectionInfo.AppendLine($"\n{section.Key.ToUpper()} Section HTML:");
-            sectionInfo.AppendLine(section.Value);
+            prompt.AppendLine("TEST OBJECTIVE:");
+            prompt.AppendLine(request.Action);
+            prompt.AppendLine();
         }
 
-        return $@"You are a senior QA automation engineer writing Playwright .NET C# tests.
+        AppendRecordedSteps(prompt, recordedActions);
 
-IMPORTANT: Generate tests using REAL selectors from the actual DOM structure provided below.
+        // Order matters. The contract goes before the page markup: with it placed after,
+        // the model read past a large DOM dump and produced a standalone test that
+        // ignored the linked solution's base class and namespace entirely.
+        if (profile is { CanWriteGherkin: true })
+            AppendGherkinContract(prompt, profile, targetFeature);
+        else if (profile is { IsUsable: true })
+            AppendHouseStyle(prompt, profile);
+        else
+            AppendStandaloneContract(prompt, request.Url);
 
-URL: {request.Url}
+        AppendPageFacts(prompt, dom);
 
-ACTUAL PAGE STRUCTURE:
-{sectionInfo}
+        AppendRules(prompt, profile);
 
-Detected Page Elements:
-- Inputs: {inputs}
-- Buttons: {buttons}
-- Links: {links}
-- Headings: {headings}
-- Sections/Cards: {elements}
+        return prompt.ToString();
+    }
 
-Test Objective:
-{request.Action}
+    /// <summary>
+    /// The recorded steps are the specification when they exist: they are what the user
+    /// actually did, so the test must reproduce that sequence rather than improvise.
+    /// Each step lists several ways to address the element and the model picks the most
+    /// durable one.
+    /// </summary>
+    private static void AppendRecordedSteps(StringBuilder prompt, IReadOnlyList<RecordedAction>? actions)
+    {
+        if (actions == null || actions.Count == 0)
+            return;
 
-CRITICAL REQUIREMENTS:
-1. Analyze the HTML structure above and use ACTUAL class names and tag names
-2. Use correct Playwright locators based on real DOM elements
-3. For the skill section example: use ""div.panel"" for the container
-4. Use ""h4"" or heading selectors for titles
-5. Use ""ul > li"" for list items or correct actual structure
-6. Extract TEXT content of elements to verify they exist
-7. Use getByText(), getByRole(), or CSS selectors matching the real DOM
-8. DO NOT invent class names or IDs that don't exist in the HTML
-9. Include assertions to verify element visibility and text content
-10. Add waits for dynamic content if needed
+        prompt.AppendLine("=== RECORDED USER STEPS (REPRODUCE THESE IN ORDER) ===");
+        prompt.AppendLine("These were captured while the user performed the scenario in a real browser.");
+        prompt.AppendLine("Write one Playwright call per step, in this order, then assert the end state.");
+        prompt.AppendLine();
 
-OUTPUT FORMAT:
-Generate a complete test class with proper structure. Include:
-- using statements at the top
-- public class declaration
-- public async Task method signature
-- Playwright setup code (browser, page initialization)
-- NO page.GotoAsync() call (navigation is handled separately)
-- Test assertions and interactions based on the objective
-- Proper cleanup with await browser.CloseAsync() at the end
+        for (var i = 0; i < actions.Count; i++)
+            prompt.AppendLine($"{i + 1}. {actions[i].Describe()}");
 
-Example structure (fill in with actual logic):
-using Microsoft.Playwright;
+        prompt.AppendLine();
+        prompt.AppendLine("For each step choose the most durable locator available: a data-testid beats a");
+        prompt.AppendLine("role plus accessible name, which beats visible text, which beats the CSS path.");
+        prompt.AppendLine("A value shown as <redacted> was a password field - use a placeholder or config value.");
+        prompt.AppendLine();
+    }
 
-public class GeneratedTest
-{{
-    public async Task Run()
-    {{
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions {{ Headless = false }});
-        var page = await browser.NewPageAsync();
-        
-        // TEST ASSERTIONS AND INTERACTIONS GO HERE
-        // DO NOT include page.GotoAsync(""{request.Url}"")
-        
-        await browser.CloseAsync();
-    }}
-}}
+    private static void AppendPageFacts(StringBuilder prompt, DomSnapshot dom)
+    {
+        prompt.AppendLine("=== ACTUAL PAGE STRUCTURE ===");
+        prompt.AppendLine("Every selector you write must come from the markup below. Do not invent one.");
+        prompt.AppendLine();
 
-EXCLUSIONS:
-- DO NOT include page.GotoAsync()
-- Navigation setup will be handled separately
-- Keep everything else as shown in the example
+        AppendList(prompt, "Headings", dom.Headings);
+        AppendList(prompt, "Buttons", dom.Buttons);
+        AppendList(prompt, "Links", dom.Links);
+        AppendList(prompt, "Input names/ids", dom.Inputs);
 
-Return ONLY valid C# code without markdown formatting.";
+        // Cap the section markup. Every heading on a page used to become its own section
+        // at up to 5000 characters each, with the same container captured more than once,
+        // which made the prompt enormous and mostly duplicated.
+        var sections = dom.SectionHtml.Take(MaxSections).ToList();
+        if (sections.Count > 0)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine($"Section markup ({sections.Count} of {dom.SectionHtml.Count}):");
+
+            foreach (var (name, html) in sections)
+            {
+                prompt.AppendLine();
+                prompt.AppendLine($"--- section: {name} ---");
+
+                if (dom.SectionSelectors.TryGetValue(name, out var selector))
+                    prompt.AppendLine($"container selector: {selector}");
+
+                if (dom.SectionItems.TryGetValue(name, out var items) && items.Count > 0)
+                    prompt.AppendLine($"list items: {string.Join(" | ", items.Take(MaxItemsPerList))}");
+
+                prompt.AppendLine(html);
+            }
+        }
+
+        prompt.AppendLine();
+    }
+
+    private static void AppendList(StringBuilder prompt, string label, List<string> values)
+    {
+        var distinct = values
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxItemsPerList)
+            .ToList();
+
+        if (distinct.Count > 0)
+            prompt.AppendLine($"- {label}: {string.Join(", ", distinct)}");
+    }
+
+    /// <summary>
+    /// Asks for a .feature file plus its step bindings.
+    ///
+    /// The existing step patterns are listed verbatim and reuse is made the first rule: a
+    /// BDD suite decays quickly when every generated scenario invents a near-duplicate of
+    /// a step that already exists.
+    /// </summary>
+    private static void AppendGherkinContract(StringBuilder prompt, SolutionProfile profile, FeatureFile? targetFeature)
+    {
+        prompt.AppendLine("=== OUTPUT CONTRACT: GHERKIN (MANDATORY) ===");
+        prompt.AppendLine("This is a Reqnroll BDD suite. Produce Gherkin plus C# bindings - never a bare NUnit test.");
+        prompt.AppendLine();
+        prompt.AppendLine("Return exactly two files, each introduced by its own marker line on its own line:");
+        prompt.AppendLine();
+        prompt.AppendLine("FILE: <Name>.feature");
+        prompt.AppendLine("<the complete Gherkin>");
+        prompt.AppendLine("FILE: <Name>Steps.cs");
+        prompt.AppendLine("<the complete C# step definition class>");
+        prompt.AppendLine();
+        prompt.AppendLine("No prose before, between or after the two files. No markdown fences.");
+        prompt.AppendLine();
+
+        if (targetFeature != null)
+        {
+            prompt.AppendLine($"TARGET FEATURE FILE: {targetFeature.FileName}");
+            prompt.AppendLine("Reproduce this file in full with your new scenario appended to it.");
+            prompt.AppendLine("Keep the existing Feature header, Background and every existing scenario unchanged.");
+            prompt.AppendLine($"Name the feature file exactly: {targetFeature.FileName}");
+            prompt.AppendLine();
+            prompt.AppendLine($"--- current contents of {targetFeature.FileName} ---");
+            prompt.AppendLine(targetFeature.Source);
+            prompt.AppendLine();
+        }
+        else
+        {
+            prompt.AppendLine("No existing feature file was selected, so create a new one named after the behaviour.");
+            prompt.AppendLine();
+        }
+
+        if (profile.StepBindings.Count > 0)
+        {
+            prompt.AppendLine("=== STEP BINDINGS THAT ALREADY EXIST - REUSE THESE ===");
+            prompt.AppendLine("Write your scenario using these exact step wordings wherever one fits.");
+            prompt.AppendLine("Only invent a new step when nothing here expresses what you need.");
+            prompt.AppendLine();
+
+            foreach (var binding in profile.StepBindings)
+                prompt.AppendLine($"  {binding}");
+
+            prompt.AppendLine();
+            prompt.AppendLine("In the steps file, include ONLY the genuinely new step methods.");
+            prompt.AppendLine("Never redefine a step listed above - Reqnroll fails at runtime on duplicate bindings.");
+            prompt.AppendLine("Because that file holds only the new bindings, give it a NEW name that does not");
+            prompt.AppendLine("collide with an existing step class, so nothing already written is replaced.");
+            prompt.AppendLine();
+        }
+
+        if (profile.StepClassSource != null)
+        {
+            prompt.AppendLine($"--- existing binding class to imitate: {profile.StepClassName} ---");
+            prompt.AppendLine(profile.StepClassSource);
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine($"- Step definition namespace: {profile.TestNamespace}.StepDefinitions");
+        prompt.AppendLine("- Mark the class [Binding].");
+        prompt.AppendLine("- Take ScenarioWorld through the constructor; it exposes Page, BaseUrl and CurrentSection.");
+        prompt.AppendLine("- Hooks already start and stop the browser. Do not create one.");
+        prompt.AppendLine("- Assert with Microsoft.Playwright.Assertions.Expect(...).");
+
+        if (profile.BaseUrl != null)
+            prompt.AppendLine($"- The configured base URL is {profile.BaseUrl}.");
+
+        prompt.AppendLine();
+    }
+
+    private static void AppendHouseStyle(StringBuilder prompt, SolutionProfile profile)
+    {
+        prompt.AppendLine("=== HOUSE STYLE (MANDATORY) ===");
+        prompt.AppendLine("This test is going into an existing solution. Match its conventions exactly.");
+        prompt.AppendLine();
+        prompt.AppendLine($"- Namespace: {profile.TestNamespace}");
+
+        if (profile.BaseClassName != null)
+        {
+            prompt.AppendLine($"- The test class must be [TestFixture] and derive from {profile.BaseClassName}.");
+            prompt.AppendLine($"- {profile.BaseClassName} already handles browser setup, teardown, failure screenshots and report logging.");
+            prompt.AppendLine("  Do NOT create a Playwright instance, browser, context or page. Do NOT write try/catch for reporting.");
+            prompt.AppendLine("  Do NOT add [SetUp] or [TearDown].");
+        }
+
+        if (profile.BaseUrl != null)
+            prompt.AppendLine($"- The configured base URL is {profile.BaseUrl}; navigate with the base class helper, not a hardcoded address.");
+
+        if (profile.Helpers.Count > 0)
+            prompt.AppendLine($"- Helpers available: {string.Join(", ", profile.Helpers)}");
+
+        if (profile.BaseClassSource != null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine($"--- {profile.BaseClassName}.cs (the members you may call) ---");
+            prompt.AppendLine(profile.BaseClassSource);
+        }
+
+        if (profile.ExampleTestSource != null)
+        {
+            prompt.AppendLine();
+            prompt.AppendLine($"--- existing test to imitate: {profile.ExampleTestName} ---");
+            prompt.AppendLine(profile.ExampleTestSource);
+        }
+
+        prompt.AppendLine();
+    }
+
+    private static void AppendStandaloneContract(StringBuilder prompt, string url)
+    {
+        prompt.AppendLine("=== OUTPUT CONTRACT ===");
+        prompt.AppendLine("No test solution is linked, so produce a self-contained runnable test:");
+        prompt.AppendLine("- a class with a public async Task Run() method");
+        prompt.AppendLine("- create the Playwright instance, browser and page inside Run()");
+        prompt.AppendLine($"- navigate with await page.GotoAsync(\"{url}\") as the first action");
+        prompt.AppendLine("- close the browser at the end");
+        prompt.AppendLine();
+    }
+
+    private static void AppendRules(StringBuilder prompt, SolutionProfile? profile)
+    {
+        prompt.AppendLine("=== RULES ===");
+        prompt.AppendLine("1. Use only selectors that appear in the page structure above.");
+        prompt.AppendLine("2. Prefer GetByRole, GetByText and GetByLabel over brittle CSS paths.");
+        prompt.AppendLine("3. Assert something meaningful - visibility, text, count.");
+        prompt.AppendLine("4. Name things after the behaviour they describe.");
+        prompt.AppendLine("5. Include the using directives each file needs.");
+
+        if (profile is { CanWriteGherkin: true })
+        {
+            prompt.AppendLine();
+            prompt.AppendLine("=== THIS IS THE PART MOST OFTEN GOT WRONG - CHECK IT ===");
+            prompt.AppendLine("- Output TWO files, each preceded by its own 'FILE: <name>' marker line.");
+            prompt.AppendLine("- The first is Gherkin (.feature). The second is C# bindings (.cs).");
+            prompt.AppendLine("- Do NOT emit a [TestFixture] or a [Test] method. This suite is Gherkin-driven.");
+            prompt.AppendLine("- Reuse the existing step wordings listed above; do not redefine them.");
+            prompt.AppendLine("- Scenario steps read as behaviour, not as UI mechanics: prefer");
+            prompt.AppendLine("  'When I sign in as a standard user' over 'When I click #login-btn'.");
+        }
+        else if (profile is { IsUsable: true })
+        {
+            prompt.AppendLine("6. Output one complete .cs file containing a single [TestFixture] class.");
+            prompt.AppendLine();
+            prompt.AppendLine("=== THIS IS THE PART MOST OFTEN GOT WRONG - CHECK IT ===");
+            prompt.AppendLine($"- The file MUST declare: namespace {profile.TestNamespace};");
+
+            if (profile.BaseClassName != null)
+            {
+                prompt.AppendLine($"- The class MUST be declared: [TestFixture] public class YourTestName : {profile.BaseClassName}");
+                prompt.AppendLine("- Each test MUST be a [Test] public async Task method. There is no Run() method.");
+                prompt.AppendLine("- There MUST be no Playwright.CreateAsync, no LaunchAsync, no NewPageAsync, no browser variable.");
+                prompt.AppendLine("- Use the inherited Page property (capital P) and the inherited Expect(...) helper.");
+                prompt.AppendLine("- Navigate with await GotoAsync(); - it already knows the base URL.");
+            }
+        }
+        else
+        {
+            prompt.AppendLine("6. Output one complete .cs file.");
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine("Return only file content. No explanation, no markdown fences.");
+    }
+
+    /// <summary>Suggests a file name for the generated fixture.</summary>
+    public static string SuggestFileName(string generatedCode, string fallback = "GeneratedTest")
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            generatedCode, @"class\s+(?<name>\w+)\s*(?::|\r?\n|\{)");
+
+        var name = match.Success ? match.Groups["name"].Value : fallback;
+        return $"{name}.cs";
     }
 }
