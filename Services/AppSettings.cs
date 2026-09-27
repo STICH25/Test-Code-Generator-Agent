@@ -38,6 +38,14 @@ public class AppSettings
     /// <summary>Root folder of the linked test-automation solution, if any.</summary>
     public string? TestSolutionPath { get; set; }
 
+    /// <summary>
+    /// Folder to save per-click debug screenshots into while recording. Null or blank
+    /// disables the feature entirely - nothing is captured and the Screenshots button stays
+    /// disabled. Always separate from <see cref="TestSolutionPath"/>: these images are a
+    /// debugging aid and must never be written into the test solution itself.
+    /// </summary>
+    public string? ScreenshotsPath { get; set; }
+
     /// <summary>DPAPI-encrypted API key. This is the only form ever written to disk.</summary>
     public string? ProtectedApiKey { get; set; }
 
@@ -74,6 +82,7 @@ public class AppSettings
         ClaudeCliPath = ClaudeCliPath,
         CliModel = CliModel,
         TestSolutionPath = TestSolutionPath,
+        ScreenshotsPath = ScreenshotsPath,
         ProtectedApiKey = ProtectedApiKey,
         Model = Model,
         Effort = Effort,

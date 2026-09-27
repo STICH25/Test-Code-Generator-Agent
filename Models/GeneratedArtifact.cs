@@ -5,6 +5,7 @@ namespace PlaywrightAgentAI.Models;
 public enum ArtifactKind
 {
     Feature,
+    PageObject,
     StepDefinitions,
     Test
 }
@@ -18,6 +19,15 @@ public class GeneratedArtifact
     public required string FileName { get; set; }
 
     public required string Content { get; set; }
+
+    /// <summary>
+    /// Set when the user explicitly chose an existing file to extend (from a Feature /
+    /// Page Object / Step Definitions dropdown), rather than letting generation create a
+    /// new one. The model was given that file's exact content and told to reproduce it in
+    /// full, so this is safe to overwrite outright - unlike a same-named collision nobody
+    /// asked for, which SolutionWriter still refuses to blind-write over.
+    /// </summary>
+    public string? TargetPath { get; set; }
 
     /// <summary>Set once written.</summary>
     public string? WrittenPath { get; set; }
@@ -86,10 +96,24 @@ public static partial class ArtifactParser
         return artifacts;
     }
 
-    private static ArtifactKind ClassifyByExtension(string fileName) =>
-        fileName.EndsWith(".feature", StringComparison.OrdinalIgnoreCase)
-            ? ArtifactKind.Feature
-            : ArtifactKind.StepDefinitions;
+    private static ArtifactKind ClassifyByExtension(string fileName)
+    {
+        if (fileName.EndsWith(".feature", StringComparison.OrdinalIgnoreCase))
+            return ArtifactKind.Feature;
+
+        // Both remaining kinds are .cs, so the name carries the distinction. Steps are the
+        // safer default: mistaking a page object for a step file lands it in the wrong
+        // folder, while the reverse would overwrite-protect the wrong thing.
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+
+        if (stem.EndsWith("Page", StringComparison.OrdinalIgnoreCase) ||
+            stem.EndsWith("PageObject", StringComparison.OrdinalIgnoreCase))
+        {
+            return ArtifactKind.PageObject;
+        }
+
+        return ArtifactKind.StepDefinitions;
+    }
 
     /// <summary>Markers are often followed by a fenced block despite instructions.</summary>
     private static string StripFences(string body)

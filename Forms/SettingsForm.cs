@@ -34,6 +34,9 @@ public class SettingsForm : Form
     private FieldBox _solutionField = null!;
     private PillButton _browseButton = null!;
     private Label _solutionStatusLabel = null!;
+    private FieldBox _screenshotsField = null!;
+    private PillButton _screenshotsBrowseButton = null!;
+    private Label _screenshotsStatusLabel = null!;
 
     private CancellationTokenSource? _testCts;
     private bool _modelsLoaded;
@@ -71,7 +74,7 @@ public class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 16,
+            RowCount = 20,
             BackColor = Theme.SurfaceAlt
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -91,7 +94,11 @@ public class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 12 solution caption
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 13 solution picker
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // 14 solution notes
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));  // 15 buttons
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));  // 15 screenshots title
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 16 screenshots caption
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 17 screenshots picker
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // 18 screenshots status
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));  // 19 buttons
 
         layout.Controls.Add(SectionTitle("Claude Account"), 0, 0);
         layout.Controls.Add(Caption("Connect using"), 0, 1);
@@ -228,6 +235,30 @@ public class SettingsForm : Form
         };
         layout.Controls.Add(_solutionStatusLabel, 0, 14);
 
+        layout.Controls.Add(SectionTitle("Debug Screenshots"), 0, 15);
+        layout.Controls.Add(Caption("Folder for per-click screenshots (blank disables this)"), 0, 16);
+
+        _screenshotsField = new FieldBox { Dock = DockStyle.Fill, PlaceholderText = @"C:\Users\you\Desktop\TestScreenshots" };
+        _screenshotsField.Inner.TextChanged += (s, e) => ScanScreenshotsFolder();
+
+        _screenshotsBrowseButton = new PillButton { Text = "Browse", Style = PillStyle.Outline, Width = 92, Dock = DockStyle.Fill };
+        _screenshotsBrowseButton.Click += (s, e) => BrowseForScreenshotsFolder();
+
+        layout.Controls.Add(SplitRow(_screenshotsField, _screenshotsBrowseButton, 92), 0, 17);
+
+        _screenshotsStatusLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Font = Theme.Ui(8.5f),
+            ForeColor = Theme.TextDisabled,
+            BackColor = Theme.SurfaceAlt,
+            TextAlign = ContentAlignment.TopLeft,
+            Padding = new Padding(2, 6, 0, 0),
+            Text = "Not set - clicks will not be captured while recording."
+        };
+        layout.Controls.Add(_screenshotsStatusLabel, 0, 18);
+
         _saveButton = new PillButton { Text = "Save", Style = PillStyle.Primary, Width = 120, Dock = DockStyle.Right };
         _saveButton.Click += (s, e) => Save();
 
@@ -238,7 +269,7 @@ public class SettingsForm : Form
         // Docked controls stack against their edge in reverse add order.
         buttonRow.Controls.Add(_cancelButton);
         buttonRow.Controls.Add(_saveButton);
-        layout.Controls.Add(buttonRow, 0, 15);
+        layout.Controls.Add(buttonRow, 0, 19);
 
         _layout = layout;
 
@@ -387,6 +418,46 @@ public class SettingsForm : Form
             _solutionField.Text = dialog.SelectedPath;
     }
 
+    private void BrowseForScreenshotsFolder()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Select a folder to save debug screenshots into",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true
+        };
+
+        if (Directory.Exists(_screenshotsField.Text))
+            dialog.SelectedPath = _screenshotsField.Text;
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            _screenshotsField.Text = dialog.SelectedPath;
+    }
+
+    /// <summary>
+    /// Purely informational - unlike the test solution, there is nothing to read from this
+    /// folder ahead of time. Just confirms the path exists (or will be created) and never
+    /// blocks Save, since a not-yet-existing folder is created automatically on first capture.
+    /// </summary>
+    private void ScanScreenshotsFolder()
+    {
+        var path = _screenshotsField.Text.Trim();
+
+        if (string.IsNullOrEmpty(path))
+        {
+            _draft.ScreenshotsPath = null;
+            _screenshotsStatusLabel.ForeColor = Theme.TextDisabled;
+            _screenshotsStatusLabel.Text = "Not set - clicks will not be captured while recording.";
+            return;
+        }
+
+        _draft.ScreenshotsPath = path;
+        _screenshotsStatusLabel.ForeColor = Directory.Exists(path) ? Theme.Accent : Theme.TextSecondary;
+        _screenshotsStatusLabel.Text = Directory.Exists(path)
+            ? "Screenshots will be saved here. Cleared automatically on a new recording, Clear, or Insert."
+            : "Folder does not exist yet - it will be created the first time you record.";
+    }
+
     /// <summary>
     /// Reads the solution and reports what the generator will be able to imitate. Runs on
     /// every keystroke, so it stays a shallow read - no build, no Roslyn workspace.
@@ -464,6 +535,7 @@ public class SettingsForm : Form
     {
         _apiKeyField.Text = _draft.ApiKey ?? string.Empty;
         _solutionField.Text = _draft.TestSolutionPath ?? string.Empty;
+        _screenshotsField.Text = _draft.ScreenshotsPath ?? string.Empty;
         _maxTokensField.Text = _draft.MaxTokens.ToString();
 
         _effortBox.SelectedItem = EffortLevels.Contains(_draft.Effort) ? _draft.Effort : "high";
@@ -579,6 +651,9 @@ public class SettingsForm : Form
 
         var solutionPath = _solutionField.Text.Trim();
         _draft.TestSolutionPath = string.IsNullOrEmpty(solutionPath) ? null : solutionPath;
+
+        var screenshotsPath = _screenshotsField.Text.Trim();
+        _draft.ScreenshotsPath = string.IsNullOrEmpty(screenshotsPath) ? null : screenshotsPath;
 
         try
         {

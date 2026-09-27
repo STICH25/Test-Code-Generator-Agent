@@ -46,6 +46,7 @@ public static partial class SolutionScanner
         DetectExampleTest(files, profile);
         DetectBaseUrl(rootPath, profile);
         DetectGherkin(rootPath, files, profile);
+        DetectPageObjects(rootPath, profile);
 
         if (profile.BaseClassName == null)
             profile.Notes.Add("No abstract test base class found; generated tests will set up their own browser.");
@@ -165,6 +166,7 @@ public static partial class SolutionScanner
 
         profile.Features.AddRange(GherkinAssets.FindFeatures(rootPath));
         profile.StepBindings.AddRange(GherkinAssets.FindStepBindings(rootPath));
+        profile.StepDefinitionFiles.AddRange(GherkinAssets.FindStepDefinitionFiles(rootPath));
 
         profile.FeaturesDirectory =
             GherkinAssets.FindDirectoryContaining(rootPath, "*.feature")
@@ -192,6 +194,27 @@ public static partial class SolutionScanner
             profile.Notes.Add(
                 $"Gherkin suite: {profile.Features.Count} feature file(s), {profile.StepBindings.Count} existing step binding(s).");
         }
+    }
+
+    /// <summary>
+    /// Locates the page objects and where new ones belong. Generated step definitions are
+    /// meant to hold assertions only, so the page object is where the locators live - which
+    /// means generation needs to know what already exists before inventing a new one.
+    /// </summary>
+    private static void DetectPageObjects(string rootPath, SolutionProfile profile)
+    {
+        profile.PageObjects.AddRange(PageObjectAssets.Find(rootPath));
+        profile.PageObjectsDirectory = PageObjectAssets.DirectoryFor(rootPath, profile.PageObjects);
+
+        // Prefer the richest existing page object as the example: one with a handful of
+        // methods shows the action/query split far better than a near-empty stub.
+        profile.ExamplePageObject = profile.PageObjects
+            .OrderByDescending(p => p.Methods.Count)
+            .FirstOrDefault();
+
+        profile.Notes.Add(profile.PageObjects.Count == 0
+            ? $"No page objects found; new ones will be created in {profile.PageObjectsDirectory}."
+            : $"{profile.PageObjects.Count} page object(s) found in {profile.PageObjectsDirectory}.");
     }
 
     private static bool StepAttributePresent(string text) =>

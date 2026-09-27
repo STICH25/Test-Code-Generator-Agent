@@ -57,6 +57,20 @@ public class SolutionProfile
 
     public string? StepClassName { get; set; }
 
+    /// <summary>Every [Binding] class found, offered as a target to append new steps to.</summary>
+    public List<StepDefinitionFile> StepDefinitionFiles { get; } = [];
+
+    // ---- Page objects ----
+
+    /// <summary>Folder new page objects are written to.</summary>
+    public string? PageObjectsDirectory { get; set; }
+
+    /// <summary>Page objects already in the solution, so generation extends rather than duplicates.</summary>
+    public List<PageObjectFile> PageObjects { get; } = [];
+
+    /// <summary>An existing page object supplied as the shape to imitate.</summary>
+    public PageObjectFile? ExamplePageObject { get; set; }
+
     /// <summary>Ready to produce feature + step files.</summary>
     public bool CanWriteGherkin =>
         SupportsGherkin &&
@@ -71,7 +85,8 @@ public class SolutionProfile
         var name = Path.GetFileName(RootPath);
 
         if (CanWriteGherkin)
-            return $"{name} - Gherkin, {Features.Count} feature file(s), {StepBindings.Count} existing step(s)";
+            return $"{name} - Gherkin, {Features.Count} feature file(s), {StepBindings.Count} existing step(s), " +
+                   $"{PageObjects.Count} page object(s)";
 
         return BaseClassName == null
             ? $"{name} - namespace {TestNamespace}, no base class detected"

@@ -204,11 +204,43 @@ public class HtmlAnalyzer
     /// through to scanning every element, the first hit was &lt;html&gt;, whose text contains
     /// the whole document. Scoring headings by how many meaningful words they share with
     /// the objective is what actually locates the right section.
+    ///
+    /// That word-scoring has its own failure mode, though: on a dashboard-style page, common
+    /// vocabulary like "device", "name", "value", "online" recurs across many unrelated
+    /// sections, so a short heading that happens to contain a few of those generic words can
+    /// out-score - and, on a length tie-break, beat outright - the one long heading that
+    /// actually matches every distinctive word in the objective (e.g. "Connected Devices
+    /// (Tailscale)" losing to a much shorter "sda (Online)" from a SMART panel). A quoted
+    /// phrase is the user naming the section directly, which is a far stronger signal than
+    /// any amount of keyword scoring, so it is tried first and wins outright when it matches.
     /// </summary>
     private void TryExtractTargetSection(IDocument document, DomSnapshot snapshot, string targetPhrase)
     {
         try
         {
+            var headings = document.QuerySelectorAll("h1, h2, h3, h4, h5, h6")
+                .OfType<IElement>()
+                .Select(el => (Heading: el, Text: el.TextContent?.Trim() ?? ""))
+                .Where(h => h.Text.Length is > 0 and <= 100)
+                .ToList();
+
+            var quotedPhrase = ExtractQuotedPhrase(targetPhrase);
+            if (quotedPhrase != null)
+            {
+                var quotedMatch = headings.FirstOrDefault(h =>
+                    h.Text.Contains(quotedPhrase, StringComparison.OrdinalIgnoreCase) ||
+                    quotedPhrase.Contains(h.Text, StringComparison.OrdinalIgnoreCase));
+
+                if (quotedMatch.Heading != null)
+                {
+                    Console.WriteLine($"Objective quoted \"{quotedPhrase}\" - matching it directly against heading text.");
+                    ApplyMatchedHeading(snapshot, quotedMatch.Heading, quotedMatch.Text);
+                    return;
+                }
+
+                Console.WriteLine($"Objective quoted \"{quotedPhrase}\" but no heading matched it; falling back to keyword scoring.");
+            }
+
             var keywords = ExtractKeywords(targetPhrase);
             if (keywords.Count == 0)
             {
@@ -218,40 +250,60 @@ public class HtmlAnalyzer
 
             Console.WriteLine($"Matching page against keywords: {string.Join(", ", keywords)}");
 
-            var best = document.QuerySelectorAll("h1, h2, h3, h4, h5, h6")
-                .OfType<IElement>()
-                .Select(heading => new
-                {
-                    Heading = heading,
-                    Text = heading.TextContent?.Trim() ?? "",
-                    Score = ScoreAgainst(heading.TextContent, keywords)
-                })
-                .Where(x => x.Score > 0 && x.Text.Length is > 0 and <= 100)
+            var best = headings
+                .Select(h => (h.Heading, h.Text, Score: ScoreAgainst(h.Text, keywords)))
+                .Where(x => x.Score > 0)
                 .OrderByDescending(x => x.Score)
                 .ThenBy(x => x.Text.Length)
                 .FirstOrDefault();
 
-            if (best == null)
+            if (best.Heading == null)
             {
                 Console.WriteLine("No heading matched the objective; falling back to a general page scan.");
                 return;
             }
 
-            var container = FindContainer(best.Heading);
-            if (container == null)
-                return;
-
-            var key = best.Text.ToLowerInvariant();
-            PopulateSectionSnapshot(snapshot, container, key);
-
-            Console.WriteLine(
-                $"Matched objective to section '{best.Text}' (score {best.Score}) " +
-                $"with selector '{snapshot.SectionSelectors.GetValueOrDefault(key) ?? "n/a"}'.");
+            ApplyMatchedHeading(snapshot, best.Heading, best.Text, best.Score);
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Warning: TryExtractTargetSection failed: {ex.Message}");
         }
+    }
+
+    private void ApplyMatchedHeading(DomSnapshot snapshot, IElement heading, string text, int? score = null)
+    {
+        var container = FindContainer(heading);
+        if (container == null)
+            return;
+
+        var key = text.ToLowerInvariant();
+        PopulateSectionSnapshot(snapshot, container, key);
+        snapshot.MatchedSectionKey = key;
+
+        var scoreNote = score.HasValue ? $" (score {score})" : "";
+        Console.WriteLine(
+            $"Matched objective to section '{text}'{scoreNote} with selector " +
+            $"'{snapshot.SectionSelectors.GetValueOrDefault(key) ?? "n/a"}'.");
+    }
+
+    private static readonly char[] QuoteChars = ['"', '\''];
+
+    /// <summary>The first single- or double-quoted phrase in the text, or null if there isn't one.</summary>
+    private static string? ExtractQuotedPhrase(string phrase)
+    {
+        foreach (var quoteChar in QuoteChars)
+        {
+            var start = phrase.IndexOf(quoteChar);
+            if (start < 0)
+                continue;
+
+            var end = phrase.IndexOf(quoteChar, start + 1);
+            if (end > start + 1)
+                return phrase[(start + 1)..end].Trim();
+        }
+
+        return null;
     }
 
     private static readonly char[] WordSeparators =

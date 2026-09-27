@@ -22,4 +22,12 @@ public class AgentResult
     /// plain NUnit run yields one .cs file.
     /// </summary>
     public List<GeneratedArtifact> Artifacts { get; set; } = [];
+
+    /// <summary>
+    /// Debug screenshot(s) taken while producing this result - a typed-objective run
+    /// captures the matched section so the user can confirm the right part of the page was
+    /// tested. Empty when no screenshots folder is configured, or when the run instead came
+    /// from a recording (which captures its own, one per action, separately).
+    /// </summary>
+    public List<ScreenshotEntry> Screenshots { get; set; } = [];
 }
