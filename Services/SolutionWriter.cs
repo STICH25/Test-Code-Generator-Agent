@@ -18,29 +18,43 @@ public static class SolutionWriter
 
         foreach (var artifact in artifacts)
         {
-            var directory = DirectoryFor(profile, artifact.Kind);
-
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                Console.Error.WriteLine($"Nowhere to write {artifact.FileName}: the solution has no folder for {artifact.Kind}.");
-                continue;
-            }
-
             try
             {
-                Directory.CreateDirectory(directory);
+                string path;
 
-                var path = Path.Combine(directory, SafeFileName(artifact.FileName));
-
-                // A feature file is deliberately rewritten in full - that is how a scenario
-                // gets appended. A step-definitions file must never be: the model is asked
-                // to emit only the NEW bindings, so overwriting an existing steps file
-                // would silently delete the ones already in it and break every scenario
-                // that used them. Write beside it instead.
-                if (artifact.Kind == ArtifactKind.StepDefinitions && File.Exists(path))
+                if (!string.IsNullOrWhiteSpace(artifact.TargetPath))
                 {
-                    path = NextAvailable(path);
-                    Console.WriteLine($"  {artifact.FileName} exists; writing new bindings to {Path.GetFileName(path)} instead");
+                    // An explicit target: the user picked this exact file from a dropdown,
+                    // and the prompt gave the model that file's full content to reproduce.
+                    // Safe to overwrite outright regardless of kind - the backup below is
+                    // the safety net, not a same-name coincidence to guard against.
+                    path = artifact.TargetPath;
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                }
+                else
+                {
+                    var directory = DirectoryFor(profile, artifact.Kind);
+
+                    if (string.IsNullOrWhiteSpace(directory))
+                    {
+                        Console.Error.WriteLine($"Nowhere to write {artifact.FileName}: the solution has no folder for {artifact.Kind}.");
+                        continue;
+                    }
+
+                    Directory.CreateDirectory(directory);
+                    path = Path.Combine(directory, SafeFileName(artifact.FileName));
+
+                    // A feature file is deliberately rewritten in full when no target was
+                    // chosen - that is the "new feature file" convention. Page objects and
+                    // step-definition files are different here: the model was not shown any
+                    // specific file's content in this branch, so a same-named collision is
+                    // accidental, not intentional, and blind-overwriting it could delete
+                    // methods or bindings the model never saw. Write beside it instead.
+                    if (artifact.Kind is ArtifactKind.StepDefinitions or ArtifactKind.PageObject && File.Exists(path))
+                    {
+                        path = NextAvailable(path);
+                        Console.WriteLine($"  {artifact.FileName} exists; writing to {Path.GetFileName(path)} instead");
+                    }
                 }
 
                 BackUpIfPresent(path);
@@ -65,6 +79,7 @@ public static class SolutionWriter
     private static string? DirectoryFor(SolutionProfile profile, ArtifactKind kind) => kind switch
     {
         ArtifactKind.Feature => profile.FeaturesDirectory,
+        ArtifactKind.PageObject => profile.PageObjectsDirectory,
         ArtifactKind.StepDefinitions => profile.StepDefinitionsDirectory,
         _ => profile.TestDirectory
     };

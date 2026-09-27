@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using PlaywrightAgentAI.Models;
+using PlaywrightAgentAI.Services;
 
 namespace PlaywrightAgentAI.Tools;
 
@@ -21,11 +22,16 @@ public class PreviewRecorder : IAsyncDisposable
 {
     private readonly WebView2 _webView;
     private readonly List<RecordedAction> _actions = [];
+    private readonly List<ScreenshotEntry> _screenshots = [];
     private readonly Lock _gate = new();
 
     private CoreWebView2? _core;
     private string? _scriptId;
     private string _lastUrl = "";
+    private string? _screenshotsFolder;
+    private string _initialDescription = "";
+    private int _screenshotIndex;
+    private bool _capturedInitialLoad;
 
     public PreviewRecorder(WebView2 webView)
     {
@@ -45,7 +51,21 @@ public class PreviewRecorder : IAsyncDisposable
         }
     }
 
-    public async Task StartAsync(string url)
+    /// <summary>Debug screenshots captured so far, in capture order. Empty when no folder is configured.</summary>
+    public IReadOnlyList<ScreenshotEntry> Screenshots
+    {
+        get
+        {
+            lock (_gate)
+                return _screenshots.ToList();
+        }
+    }
+
+    /// <summary>
+    /// Starts recording. <paramref name="screenshotsFolder"/> is optional - when it is null
+    /// or blank, actions are still recorded but nothing is captured to disk.
+    /// </summary>
+    public async Task StartAsync(string url, string? screenshotsFolder = null)
     {
         if (IsRecording)
             throw new InvalidOperationException("Already recording.");
@@ -54,7 +74,18 @@ public class PreviewRecorder : IAsyncDisposable
                 ?? throw new InvalidOperationException("The preview is not ready yet.");
 
         lock (_gate)
+        {
             _actions.Clear();
+            _screenshots.Clear();
+        }
+
+        _screenshotsFolder = screenshotsFolder;
+        _screenshotIndex = 0;
+        _capturedInitialLoad = false;
+
+        // A stale screenshot from a previous, never-cleared session must not leak into this
+        // one - the viewer has no way to tell "left over" from "just captured" apart.
+        ScreenshotCapture.ClearFolder(_screenshotsFolder);
 
         _core.WebMessageReceived += OnWebMessage;
         _core.NavigationCompleted += OnNavigationCompleted;
@@ -66,7 +97,11 @@ public class PreviewRecorder : IAsyncDisposable
 
         IsRecording = true;
 
-        Add(new RecordedAction { Kind = "navigate", Url = url });
+        var initial = new RecordedAction { Kind = "navigate", Url = url };
+        _initialDescription = initial.Describe();
+        // capture: false - the page has not navigated yet at this point, so there is
+        // nothing worth a screenshot until OnNavigationCompleted fires below.
+        Add(initial, capture: false);
         _lastUrl = url;
 
         // Reload so the init script applies to the page already on screen.
@@ -91,11 +126,25 @@ public class PreviewRecorder : IAsyncDisposable
             return;
 
         var url = _core.Source;
-        if (string.IsNullOrWhiteSpace(url) || url == "about:blank" || url == _lastUrl)
+        if (string.IsNullOrWhiteSpace(url) || url == "about:blank")
             return;
 
-        _lastUrl = url;
-        Add(new RecordedAction { Kind = "navigate", Url = url });
+        if (url != _lastUrl)
+        {
+            _lastUrl = url;
+            Add(new RecordedAction { Kind = "navigate", Url = url });
+            return;
+        }
+
+        // The very first navigation (StartAsync's Navigate call) lands here too, since
+        // _lastUrl was already set before it started - that is the one time a screenshot is
+        // still owed: the initial "navigate" action was recorded with capture:false because
+        // the page had not loaded yet, and now it has.
+        if (!_capturedInitialLoad)
+        {
+            _capturedInitialLoad = true;
+            _ = CaptureAsync(_initialDescription);
+        }
     }
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -121,7 +170,7 @@ public class PreviewRecorder : IAsyncDisposable
         }
     }
 
-    private void Add(RecordedAction action)
+    private void Add(RecordedAction action, bool capture = true)
     {
         lock (_gate)
         {
@@ -146,6 +195,44 @@ public class PreviewRecorder : IAsyncDisposable
 
         Console.WriteLine($"  recorded: {action.Describe()}");
         ActionRecorded?.Invoke(action);
+
+        if (capture)
+            _ = CaptureAsync(action.Describe());
+    }
+
+    /// <summary>
+    /// Captures the preview's current visual via WebView2's own CapturePreviewAsync - the
+    /// built-in, purpose-made API for this, rather than a GDI screen-scrape of the app
+    /// window (which would need to fight z-order and DPI, and would capture the app chrome
+    /// along with the page). Fire-and-forget from the caller's point of view: a screenshot
+    /// failing must never break recording itself.
+    /// </summary>
+    private async Task CaptureAsync(string description)
+    {
+        if (string.IsNullOrWhiteSpace(_screenshotsFolder) || _core == null)
+            return;
+
+        int index;
+        lock (_gate)
+            index = ++_screenshotIndex;
+
+        var path = Path.Combine(_screenshotsFolder, $"{index:000}.png");
+
+        try
+        {
+            Directory.CreateDirectory(_screenshotsFolder);
+
+            await using (var stream = File.Create(path))
+                await _core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
+
+            var entry = new ScreenshotEntry { Index = index, FilePath = path, Description = description };
+            lock (_gate)
+                _screenshots.Add(entry);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not capture a screenshot: {ex.Message}");
+        }
     }
 
     private async Task DetachAsync()

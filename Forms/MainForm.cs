@@ -14,7 +14,22 @@ public partial class MainForm : Form
     private SolutionProfile? _solutionProfile;
     private PreviewRecorder? _recorder;
     private List<RecordedAction> _recordedActions = [];
+
+    /// <summary>
+    /// Debug screenshots from the last recording, in capture order. Cleared - files and all,
+    /// via <see cref="ClearScreenshots"/> - whenever a new recording starts, Clear is
+    /// pressed, or Insert succeeds, so this list never outlives the run it belongs to.
+    /// </summary>
+    private List<ScreenshotEntry> _recordedScreenshots = [];
     private ExplorationAgent _agent = null!;
+
+    /// <summary>
+    /// The files the last run produced (or the static-template fallback, wrapped the same
+    /// way). This is the single source of truth for what the three code tabs show, what
+    /// Edit modifies, and what Insert writes - editing a tab's TextBox directly would leave
+    /// the artifact's own Content stale and Insert would write the old version.
+    /// </summary>
+    private List<GeneratedArtifact> _lastArtifacts = [];
 
     private CancellationTokenSource? _cts;
     private bool _webViewReady;
@@ -25,18 +40,27 @@ public partial class MainForm : Form
     // a compile error instead of a null dereference inside a finally block.
     private FieldBox _urlField = null!;
     private FieldBox _objectiveField = null!;
-    private TextBox _outputTextBox = null!;
+    private TextBox _featureTextBox = null!;
+    private TextBox _pageObjectTextBox = null!;
+    private TextBox _stepsTextBox = null!;
     private TextBox _logTextBox = null!;
     private PillButton _generateButton = null!;
     private PillButton _cancelButton = null!;
     private PillButton _previewButton = null!;
+    private PillButton _editButton = null!;
     private PillButton _copyButton = null!;
-    private PillButton _clearLogButton = null!;
+    private PillButton _clearButton = null!;
     private PillButton _settingsButton = null!;
-    private PillButton _saveToSolutionButton = null!;
+    private PillButton _openFolderButton = null!;
+    private PillButton _insertButton = null!;
     private PillButton _recordButton = null!;
+    private PillButton _screenshotsButton = null!;
     private DarkComboBox _featureBox = null!;
     private Label _featureHint = null!;
+    private DarkComboBox _pageObjectBox = null!;
+    private Label _pageObjectHint = null!;
+    private DarkComboBox _stepFileBox = null!;
+    private Label _stepFileHint = null!;
     private Label _statusLabel = null!;
     private Label _previewUrlLabel = null!;
     private ActivityBar _activityBar = null!;
@@ -83,8 +107,8 @@ public partial class MainForm : Form
 
         _agent = new ExplorationAgent(generator, _solutionProfile);
         ReflectConnectionState();
-        PopulateFeatureFiles();
-        UpdateSaveButtonState();
+        PopulateTargetPickers();
+        UpdateInsertButtonState();
     }
 
     private ITestCodeGenerator? BuildGenerator()
@@ -204,10 +228,11 @@ public partial class MainForm : Form
         // current size, and a SplitContainer starts at its default 150px. Setting them
         // before it is docked and parented throws InvalidOperationException.
         ConfigureSplit(mainSplit, minPanel1: 420, minPanel2: 320, desired: 660);
-        // The input card's fixed rows now total 292px (the feature picker added three)
-        // plus 36px of card padding, so it needs ~420 before the objective field gets a
-        // usable height rather than a sliver.
-        ConfigureSplit(leftSplit, minPanel1: 420, minPanel2: 170, desired: 500);
+        // The input card's fixed rows now total three target pickers (Feature / Page
+        // Object / Steps, 88px each) plus the url row and card padding - about 640px
+        // before the objective field gets a usable height rather than a sliver. If you
+        // add rows to the input card, raise this to match.
+        ConfigureSplit(leftSplit, minPanel1: 640, minPanel2: 170, desired: 760);
     }
 
     /// <summary>
@@ -258,16 +283,15 @@ public partial class MainForm : Form
     {
         var card = new Card { Dock = DockStyle.Fill };
 
-        var layout = NewCardLayout(rows: 6);
+        var layout = NewCardLayout(rows: 8);
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));   // 0 title
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));   // 1 url caption
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));   // 2 url row
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));   // 3 feature caption
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));   // 4 feature picker
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));   // 5 scenario hint
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // 6 objective caption
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 7 objective field
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));   // 8 actions
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));   // 3 target pickers (feature / page object / steps)
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));   // 4 target hint
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));   // 5 objective caption
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 6 objective field
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));   // 7 actions
 
         _settingsButton = new PillButton { Text = "Settings", Style = PillStyle.Outline, Width = 96, Height = 30, Dock = DockStyle.Right };
         _settingsButton.Click += (s, e) => OpenSettings();
@@ -292,32 +316,75 @@ public partial class MainForm : Form
         _previewButton.Click += async (s, e) => await LoadPreview();
 
         layout.Controls.Add(Row(_urlField, _previewButton, 104), 0, 2);
-        _featureBox = new DarkComboBox { Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 4) };
-        _featureBox.SelectedIndexChanged += (s, e) => ShowFeatureScenarios();
 
-        _featureHint = new Label
+        // Three side-by-side pickers rather than three stacked blocks: each lets the user
+        // target an existing file (extend it) or leave "New ..." to create one, exactly
+        // like the feature-file picker did on its own before the page object and step
+        // targets joined it. A combined hint line underneath reports all three choices at
+        // once, since a full caption+picker+hint block per target would triple the height
+        // this card needs.
+        var targetsRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            AutoSize = false,
-            AutoEllipsis = true,
-            Font = Theme.Ui(8.5f),
-            ForeColor = Theme.TextDisabled,
-            BackColor = Theme.SurfaceAlt,
-            TextAlign = ContentAlignment.TopLeft,
-            Text = "Link a solution in Settings to target a feature file."
+            ColumnCount = 3,
+            RowCount = 2,
+            BackColor = Theme.SurfaceAlt
         };
+        targetsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        targetsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        targetsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        targetsRow.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
+        targetsRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(Caption("Feature file"), 0, 3);
-        layout.Controls.Add(_featureBox, 0, 4);
-        layout.Controls.Add(_featureHint, 0, 5);
-        layout.Controls.Add(Caption("Test Objective"), 0, 6);
+        _featureBox = new DarkComboBox { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 6, 0) };
+        _featureBox.SelectedIndexChanged += (s, e) => ShowTargetHints();
+
+        _pageObjectBox = new DarkComboBox { Dock = DockStyle.Fill, Margin = new Padding(3, 0, 3, 0) };
+        _pageObjectBox.SelectedIndexChanged += (s, e) => ShowTargetHints();
+
+        _stepFileBox = new DarkComboBox { Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
+        _stepFileBox.SelectedIndexChanged += (s, e) => ShowTargetHints();
+
+        targetsRow.Controls.Add(MiniCaption("Feature file"), 0, 0);
+        targetsRow.Controls.Add(MiniCaption("Page object"), 1, 0);
+        targetsRow.Controls.Add(MiniCaption("Step definitions"), 2, 0);
+        targetsRow.Controls.Add(_featureBox, 0, 1);
+        targetsRow.Controls.Add(_pageObjectBox, 1, 1);
+        targetsRow.Controls.Add(_stepFileBox, 2, 1);
+
+        layout.Controls.Add(targetsRow, 0, 3);
+
+        var targetHintRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Theme.SurfaceAlt
+        };
+        targetHintRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        targetHintRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        targetHintRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+
+        _featureHint = TargetHintLabel();
+        _pageObjectHint = TargetHintLabel();
+        _stepFileHint = TargetHintLabel();
+        _featureHint.Margin = new Padding(0, 0, 6, 0);
+        _pageObjectHint.Margin = new Padding(3, 0, 3, 0);
+        _stepFileHint.Margin = new Padding(6, 0, 0, 0);
+
+        targetHintRow.Controls.Add(_featureHint, 0, 0);
+        targetHintRow.Controls.Add(_pageObjectHint, 1, 0);
+        targetHintRow.Controls.Add(_stepFileHint, 2, 0);
+        layout.Controls.Add(targetHintRow, 0, 4);
+
+        layout.Controls.Add(Caption("Test Objective"), 0, 5);
 
         _objectiveField = new FieldBox(multiline: true)
         {
             Dock = DockStyle.Fill,
             PlaceholderText = "e.g. Verify the Skills section lists every skill item and each one is visible."
         };
-        layout.Controls.Add(_objectiveField, 0, 7);
+        layout.Controls.Add(_objectiveField, 0, 6);
 
         _generateButton = new PillButton { Text = "Generate Test", Style = PillStyle.Primary, Hero = true, Dock = DockStyle.Fill };
         _generateButton.Click += async (s, e) => await GenerateTest();
@@ -333,10 +400,13 @@ public partial class MainForm : Form
         _recordButton = new PillButton { Text = "Record", Style = PillStyle.Outline, Width = 104, Dock = DockStyle.Fill };
         _recordButton.Click += async (s, e) => await ToggleRecording();
 
+        _screenshotsButton = new PillButton { Text = "Screenshots", Style = PillStyle.Outline, Width = 128, Dock = DockStyle.Fill, Enabled = false };
+        _screenshotsButton.Click += (s, e) => OpenScreenshotsViewer();
+
         var actionRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             BackColor = Theme.SurfaceAlt,
             Margin = new Padding(0, 10, 0, 0)
@@ -344,13 +414,16 @@ public partial class MainForm : Form
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 114));
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 114));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 128));
         _generateButton.Margin = new Padding(0, 0, 10, 0);
         _cancelButton.Margin = new Padding(0, 0, 10, 0);
-        _recordButton.Margin = Padding.Empty;
+        _recordButton.Margin = new Padding(0, 0, 10, 0);
+        _screenshotsButton.Margin = Padding.Empty;
         actionRow.Controls.Add(_generateButton, 0, 0);
         actionRow.Controls.Add(_cancelButton, 1, 0);
         actionRow.Controls.Add(_recordButton, 2, 0);
-        layout.Controls.Add(actionRow, 0, 8);
+        actionRow.Controls.Add(_screenshotsButton, 3, 0);
+        layout.Controls.Add(actionRow, 0, 7);
 
         card.Controls.Add(layout);
         return card;
@@ -364,28 +437,57 @@ public partial class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
+        // Four tabs: the three files a Gherkin run produces, plus the Log. A plain NUnit
+        // fixture (no Reqnroll solution linked) has only one file - it goes in Steps, the
+        // closest of the three to "the runnable code" - and Feature/Page Object stay empty.
         _outputTabs = new SegmentedTabs();
-        _outputTabs.SetItems("Code", "Log");
+        _outputTabs.SetItems("Feature", "Page Object", "Steps", "Log");
         _outputTabs.SelectedIndexChanged += (s, e) => ShowOutputTab(_outputTabs.SelectedIndex);
+
+        // These four buttons all act on whichever tab is showing, the way Copy/Clear
+        // already did - Edit opens a window for the active tab's content; Copy/Clear read
+        // and clear it. Insert is the only one that is not tab-scoped: it always writes
+        // every artifact from the last run, using whichever targets were selected.
+        _editButton = new PillButton { Text = "Edit", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
+        _editButton.Click += (s, e) => EditActiveArtifact();
 
         _copyButton = new PillButton { Text = "Copy", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
         _copyButton.Click += (s, e) =>
         {
-            if (string.IsNullOrWhiteSpace(_outputTextBox.Text))
+            var box = ActiveOutputBox;
+            var what = ActiveOutputName;
+
+            if (string.IsNullOrWhiteSpace(box.Text))
             {
-                SetStatus("Nothing to copy - generate a test first.", Theme.Warning);
+                SetStatus($"Nothing to copy - the {what} is empty.", Theme.Warning);
                 return;
             }
 
-            Clipboard.SetText(_outputTextBox.Text);
-            SetStatus("Code copied to clipboard.", Theme.Accent);
+            Clipboard.SetText(box.Text);
+            SetStatus($"{char.ToUpperInvariant(what[0])}{what[1..]} copied to clipboard.", Theme.Accent);
         };
 
-        _clearLogButton = new PillButton { Text = "Clear", Style = PillStyle.Ghost, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
-        _clearLogButton.Click += (s, e) => _logTextBox.Clear();
+        _clearButton = new PillButton { Text = "Clear", Style = PillStyle.Ghost, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
+        _clearButton.Click += (s, e) =>
+        {
+            var what = ActiveOutputName;
 
-        _saveToSolutionButton = new PillButton { Text = "Open Folder", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
-        _saveToSolutionButton.Click += (s, e) => OpenSolutionFolder();
+            if (string.IsNullOrWhiteSpace(ActiveOutputBox.Text))
+            {
+                SetStatus($"The {what} is already empty.", Theme.TextSecondary);
+                return;
+            }
+
+            ActiveOutputBox.Clear();
+            ClearScreenshots();
+            SetStatus($"Cleared the {what}.", Theme.TextSecondary);
+        };
+
+        _openFolderButton = new PillButton { Text = "Folder", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
+        _openFolderButton.Click += (s, e) => OpenSolutionFolder();
+
+        _insertButton = new PillButton { Text = "Insert", Style = PillStyle.Primary, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
+        _insertButton.Click += (s, e) => InsertToSolution();
 
         // A TableLayoutPanel rather than docked buttons: with Dock=Right the buttons were
         // clipped out of existence as the card narrowed (Clear vanished entirely at the
@@ -394,30 +496,35 @@ public partial class MainForm : Form
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 6,
             RowCount = 1,
             BackColor = Theme.SurfaceAlt,
             Margin = new Padding(0, 0, 0, 8)
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
 
         _outputTabs.Dock = DockStyle.Fill;
         _outputTabs.Margin = Padding.Empty;
 
         header.Controls.Add(_outputTabs, 0, 0);
-        header.Controls.Add(_clearLogButton, 1, 0);
-        header.Controls.Add(_copyButton, 2, 0);
-        header.Controls.Add(_saveToSolutionButton, 3, 0);
+        header.Controls.Add(_editButton, 1, 0);
+        header.Controls.Add(_clearButton, 2, 0);
+        header.Controls.Add(_copyButton, 3, 0);
+        header.Controls.Add(_openFolderButton, 4, 0);
+        header.Controls.Add(_insertButton, 5, 0);
         layout.Controls.Add(header, 0, 0);
 
         // Code does not wrap - wrapping changes how it reads. Log lines do, because they
         // are prose and would otherwise need horizontal scrolling.
-        _outputTextBox = NewConsoleBox(wrap: false);
+        _featureTextBox = NewConsoleBox(wrap: false);
+        _pageObjectTextBox = NewConsoleBox(wrap: false);
+        _stepsTextBox = NewConsoleBox(wrap: false);
         _logTextBox = NewConsoleBox(wrap: true);
-        _logTextBox.Visible = false;
 
         var content = new Card
         {
@@ -427,11 +534,18 @@ public partial class MainForm : Form
             BackColor = Theme.SurfaceAlt,
             Padding = new Padding(12, 10, 6, 10)
         };
-        content.Controls.Add(_outputTextBox);
+        content.Controls.Add(_featureTextBox);
+        content.Controls.Add(_pageObjectTextBox);
+        content.Controls.Add(_stepsTextBox);
         content.Controls.Add(_logTextBox);
         layout.Controls.Add(content, 0, 1);
 
         card.Controls.Add(layout);
+
+        // Sets initial visibility (only the Feature box) and the Edit button's enabled
+        // state, matching whatever ShowOutputTab does for every tab switch afterwards.
+        ShowOutputTab(0);
+
         return card;
     }
 
@@ -573,6 +687,29 @@ public partial class MainForm : Form
         TextAlign = ContentAlignment.MiddleLeft
     };
 
+    /// <summary>A smaller caption for the three side-by-side target pickers.</summary>
+    private static Label MiniCaption(string text) => new()
+    {
+        Dock = DockStyle.Fill,
+        Text = text.ToUpperInvariant(),
+        Font = Theme.Ui(7f, FontStyle.Bold),
+        ForeColor = Theme.TextDisabled,
+        BackColor = Theme.SurfaceAlt,
+        TextAlign = ContentAlignment.BottomLeft,
+        AutoEllipsis = true
+    };
+
+    private static Label TargetHintLabel() => new()
+    {
+        Dock = DockStyle.Fill,
+        AutoSize = false,
+        Font = Theme.Ui(7.5f),
+        ForeColor = Theme.TextDisabled,
+        BackColor = Theme.SurfaceAlt,
+        TextAlign = ContentAlignment.TopLeft,
+        Padding = new Padding(0, 2, 0, 0)
+    };
+
     private static Label Caption(string text) => new()
     {
         Dock = DockStyle.Fill,
@@ -605,9 +742,41 @@ public partial class MainForm : Form
 
     private void ShowOutputTab(int index)
     {
-        _outputTextBox.Visible = index == 0;
-        _logTextBox.Visible = index == 1;
+        _featureTextBox.Visible = index == 0;
+        _pageObjectTextBox.Visible = index == 1;
+        _stepsTextBox.Visible = index == 2;
+        _logTextBox.Visible = index == 3;
+
+        // The log is generated console output, not a file - there is nothing to edit or
+        // insert about it.
+        _editButton.Enabled = index != 3;
     }
+
+    /// <summary>The box the user is actually looking at.</summary>
+    private TextBox ActiveOutputBox => _outputTabs.SelectedIndex switch
+    {
+        0 => _featureTextBox,
+        1 => _pageObjectTextBox,
+        2 => _stepsTextBox,
+        _ => _logTextBox
+    };
+
+    private string ActiveOutputName => _outputTabs.SelectedIndex switch
+    {
+        0 => "feature file",
+        1 => "page object",
+        2 => "step definitions",
+        _ => "log"
+    };
+
+    /// <summary>Which artifact kind the active tab shows, or null for the Log tab.</summary>
+    private ArtifactKind? ActiveArtifactKind => _outputTabs.SelectedIndex switch
+    {
+        0 => ArtifactKind.Feature,
+        1 => ArtifactKind.PageObject,
+        2 => ArtifactKind.StepDefinitions,
+        _ => null
+    };
 
     private void ClipWebViewCorners()
     {
@@ -721,7 +890,7 @@ public partial class MainForm : Form
             await LoadPreview();
 
         SetRunning(true);
-        _outputTabs.SelectedIndex = 1;
+        _outputTabs.SelectedIndex = 3; // Log
 
         _cts?.Dispose();
         _cts = new CancellationTokenSource();
@@ -735,27 +904,45 @@ public partial class MainForm : Form
                 Url = url,
                 TestObjective = objective,
                 RecordedActions = _recordedActions,
-                TargetFeaturePath = SelectedFeature?.Path
+                TargetFeaturePath = SelectedFeature?.Path,
+                TargetPageObjectPath = SelectedPageObject?.Path,
+                TargetStepDefinitionsPath = SelectedStepDefinitionFile?.Path,
+                ScreenshotsPath = _settings.ScreenshotsPath
             };
             var result = await _agent.Run(request, _cts.Token);
 
-            // A multi-line TextBox only breaks on CRLF. The template literals in
-            // TestCodeBuilder come from LF-only source files and model output is LF too,
-            // so without this the whole test collapses onto a single line.
-            _outputTextBox.Text = result.GeneratedCode.ReplaceLineEndings();
+            // The static-template fallback (no AI, or the AI call failed) never populates
+            // Artifacts, only GeneratedCode. Wrap it the same way a real multi-file result
+            // is wrapped, so every downstream consumer - the tabs, Edit, Insert - has one
+            // shape to deal with regardless of which path produced it.
+            _lastArtifacts = result.Artifacts.Count > 0
+                ? result.Artifacts
+                : [new GeneratedArtifact { Kind = ArtifactKind.Test, FileName = "GeneratedTest.cs", Content = result.GeneratedCode }];
+
+            // A recording already populated this from the recorder itself; a typed-objective
+            // run has no recorded actions, so whatever the agent captured (or didn't) replaces
+            // stale state from an earlier recording rather than leaving it hanging around.
+            if (_recordedActions.Count == 0)
+            {
+                _recordedScreenshots = [.. result.Screenshots];
+                UpdateScreenshotsButtonState();
+            }
+
+            PopulateArtifactTabs();
 
             foreach (var warning in result.Warnings)
                 Console.Error.WriteLine(warning);
 
-            UpdateSaveButtonState();
+            UpdateInsertButtonState();
 
             // The old code reported success even when the AI had failed and the static
-            // stub was returned. Report what actually happened.
+            // stub was returned. Report what actually happened. Nothing is written to disk
+            // here any more - Insert is now the explicit, user-triggered step, so there is
+            // a chance to review or edit first.
             if (result.UsedAi)
             {
                 _outputTabs.SelectedIndex = 0;
-                SetStatus("Test generated.", Theme.Accent);
-                AutoSave(result);
+                SetStatus("Test generated. Review it, then press Insert to write it into the solution.", Theme.Accent);
             }
             else
             {
@@ -770,7 +957,7 @@ public partial class MainForm : Form
         {
             Console.Error.WriteLine($"{ex.GetType().Name}: {ex.Message}");
             SetStatus($"Failed: {ex.Message}", Theme.Danger);
-            _outputTabs.SelectedIndex = 1;
+            _outputTabs.SelectedIndex = 3; // Log
         }
         finally
         {
@@ -817,13 +1004,15 @@ public partial class MainForm : Form
             }
 
             _recordedActions = [];
+            _recordedScreenshots = [];
+            UpdateScreenshotsButtonState();
             _recorder = new PreviewRecorder(_webView);
             _recorder.ActionRecorded += OnActionRecorded;
 
-            _outputTabs.SelectedIndex = 1;
+            _outputTabs.SelectedIndex = 3; // Log
             SetRecordingUi(true);
 
-            await _recorder.StartAsync(url);
+            await _recorder.StartAsync(url, _settings.ScreenshotsPath);
             _lastPreviewedUrl = url;
             _previewUrlLabel.Text = url;
             SetStatus("Recording in the preview - perform your steps, then press Done.", Theme.Accent);
@@ -845,6 +1034,7 @@ public partial class MainForm : Form
         try
         {
             _recordedActions = [.. await _recorder.StopAsync()];
+            _recordedScreenshots = [.. _recorder.Screenshots];
         }
         catch (Exception ex)
         {
@@ -856,14 +1046,60 @@ public partial class MainForm : Form
             SetRecordingUi(false);
         }
 
+        UpdateScreenshotsButtonState();
+
         if (_recordedActions.Count == 0)
         {
             SetStatus("No steps were recorded.", Theme.Warning);
             return;
         }
 
-        SetStatus($"Captured {_recordedActions.Count} step(s). Generating the test...", Theme.Accent);
+        var screenshotNote = _recordedScreenshots.Count > 0
+            ? $" ({_recordedScreenshots.Count} screenshot(s) captured)"
+            : "";
+        SetStatus($"Captured {_recordedActions.Count} step(s){screenshotNote}. Generating the test...", Theme.Accent);
         await GenerateTest();
+    }
+
+    private void UpdateScreenshotsButtonState() =>
+        _screenshotsButton.Enabled = _recordedScreenshots.Count > 0;
+
+    /// <summary>
+    /// Deletes the screenshots on disk and forgets them in memory. Screenshots are a
+    /// debugging aid tied to one recording pass - once its code has been cleared or written
+    /// into the solution, keeping stale images around would only let the viewer show a batch
+    /// that no longer matches anything on screen.
+    /// </summary>
+    private void ClearScreenshots()
+    {
+        if (_recordedScreenshots.Count == 0)
+            return;
+
+        ScreenshotCapture.ClearFolder(_settings.ScreenshotsPath);
+        _recordedScreenshots = [];
+        UpdateScreenshotsButtonState();
+    }
+
+    private void OpenScreenshotsViewer()
+    {
+        if (_recordedScreenshots.Count == 0)
+        {
+            SetStatus("No screenshots captured yet. Set a folder in Settings, then record.", Theme.Warning);
+            return;
+        }
+
+        try
+        {
+            using var dialog = new ScreenshotViewerDialog(_recordedScreenshots);
+            dialog.ShowDialog(this);
+        }
+        catch (Exception ex)
+        {
+            // A bug in the viewer must never take down the whole app over what is only a
+            // debugging aid - report it and move on.
+            Console.Error.WriteLine($"Could not open the screenshots viewer: {ex}");
+            SetStatus($"Could not open the screenshots viewer: {ex.Message}", Theme.Danger);
+        }
     }
 
     private void OnActionRecorded(RecordedAction action)
@@ -898,9 +1134,36 @@ public partial class MainForm : Form
         _previewButton.Enabled = !recording;
     }
 
+    // ---------------------------------------------------------------- target pickers
+    //
+    // Feature, Page Object and Step Definitions each get the same three things: a choice
+    // record wrapping "an existing file" or "create new", a Populate method that fills the
+    // dropdown from the scanned solution, and a hint that reports what selecting it means.
+    // Kept as three near-identical blocks rather than one generic one because each choice
+    // carries a different file type and a different hint message - collapsing them would
+    // trade this straightforward repetition for a generics puzzle that is not worth solving
+    // for three dropdowns.
+
     private sealed record FeatureChoice(FeatureFile? File, string Label)
     {
         public override string ToString() => Label;
+    }
+
+    private sealed record PageObjectChoice(PageObjectFile? File, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private sealed record StepFileChoice(StepDefinitionFile? File, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private void PopulateTargetPickers()
+    {
+        PopulateFeatureFiles();
+        PopulatePageObjectFiles();
+        PopulateStepDefinitionFiles();
     }
 
     private void PopulateFeatureFiles()
@@ -912,72 +1175,205 @@ public partial class MainForm : Form
             _featureBox.Items.Add(new FeatureChoice(null, "No Gherkin solution linked"));
             _featureBox.SelectedIndex = 0;
             _featureBox.Enabled = false;
-            _featureHint.Text = "Link a Reqnroll solution in Settings to target a feature file.";
-            return;
+        }
+        else
+        {
+            _featureBox.Enabled = true;
+            _featureBox.Items.Add(new FeatureChoice(null, "New feature file"));
+
+            foreach (var feature in _solutionProfile.Features)
+                _featureBox.Items.Add(new FeatureChoice(feature, feature.ToString()));
+
+            _featureBox.SelectedIndex = 0;
         }
 
-        _featureBox.Enabled = true;
-        _featureBox.Items.Add(new FeatureChoice(null, "New feature file"));
+        ShowTargetHints();
+    }
 
-        foreach (var feature in _solutionProfile.Features)
-            _featureBox.Items.Add(new FeatureChoice(feature, feature.ToString()));
+    private void PopulatePageObjectFiles()
+    {
+        _pageObjectBox.Items.Clear();
 
-        _featureBox.SelectedIndex = 0;
-        ShowFeatureScenarios();
+        if (_solutionProfile is not { CanWriteGherkin: true })
+        {
+            _pageObjectBox.Items.Add(new PageObjectChoice(null, "No Gherkin solution linked"));
+            _pageObjectBox.SelectedIndex = 0;
+            _pageObjectBox.Enabled = false;
+        }
+        else
+        {
+            _pageObjectBox.Enabled = true;
+            _pageObjectBox.Items.Add(new PageObjectChoice(null, "New page object"));
+
+            foreach (var page in _solutionProfile.PageObjects)
+                _pageObjectBox.Items.Add(new PageObjectChoice(page, page.ToString()));
+
+            _pageObjectBox.SelectedIndex = 0;
+        }
+
+        ShowTargetHints();
+    }
+
+    private void PopulateStepDefinitionFiles()
+    {
+        _stepFileBox.Items.Clear();
+
+        if (_solutionProfile is not { CanWriteGherkin: true })
+        {
+            _stepFileBox.Items.Add(new StepFileChoice(null, "No Gherkin solution linked"));
+            _stepFileBox.SelectedIndex = 0;
+            _stepFileBox.Enabled = false;
+        }
+        else
+        {
+            _stepFileBox.Enabled = true;
+            _stepFileBox.Items.Add(new StepFileChoice(null, "New step file"));
+
+            foreach (var file in _solutionProfile.StepDefinitionFiles)
+                _stepFileBox.Items.Add(new StepFileChoice(file, file.ToString()));
+
+            _stepFileBox.SelectedIndex = 0;
+        }
+
+        ShowTargetHints();
     }
 
     /// <summary>
-    /// Shows what is already in the selected feature, so the user can see which scenarios
-    /// exist before adding another - and so it is obvious the new one will be appended
-    /// rather than replacing them.
+    /// Shows what each selection means, so the user can see - before generating - which
+    /// scenarios or methods already exist and that a new one will be appended rather than
+    /// replacing them.
     /// </summary>
-    private void ShowFeatureScenarios()
+    private void ShowTargetHints()
     {
-        if (_featureBox.SelectedItem is not FeatureChoice choice)
-            return;
+        var linked = _solutionProfile is { CanWriteGherkin: true };
 
-        if (choice.File == null)
+        if (_featureBox.SelectedItem is FeatureChoice featureChoice)
         {
-            _featureHint.Text = _solutionProfile is { CanWriteGherkin: true }
-                ? "A new .feature file will be created and named after the behaviour."
-                : "Link a Reqnroll solution in Settings to target a feature file.";
-            return;
+            _featureHint.Text = !linked
+                ? "Link a Reqnroll solution in Settings."
+                : featureChoice.File == null
+                    ? "New .feature file, named after the behaviour."
+                    : featureChoice.File.Scenarios.Count == 0
+                        ? $"{featureChoice.File.FileName}: no scenarios yet."
+                        : $"Appending to {featureChoice.File.Scenarios.Count} scenario(s).";
         }
 
-        var scenarios = choice.File.Scenarios;
-        _featureHint.Text = scenarios.Count == 0
-            ? $"{choice.File.FileName} has no scenarios yet."
-            : $"Appending to {scenarios.Count} existing scenario(s): {string.Join("; ", scenarios.Take(3))}"
-              + (scenarios.Count > 3 ? " ..." : string.Empty);
+        if (_pageObjectBox.SelectedItem is PageObjectChoice pageChoice)
+        {
+            _pageObjectHint.Text = !linked
+                ? "Link a Reqnroll solution in Settings."
+                : pageChoice.File == null
+                    ? "New page object, named after the page."
+                    : $"Extending {pageChoice.File.ClassName} ({pageChoice.File.Methods.Count} method(s)).";
+        }
+
+        if (_stepFileBox.SelectedItem is StepFileChoice stepChoice)
+        {
+            _stepFileHint.Text = !linked
+                ? "Link a Reqnroll solution in Settings."
+                : stepChoice.File == null
+                    ? "New file, holding only the new step(s)."
+                    : $"Adding to {stepChoice.File.ClassName} ({stepChoice.File.BindingCount} existing step(s)).";
+        }
     }
 
     private FeatureFile? SelectedFeature =>
         (_featureBox.SelectedItem as FeatureChoice)?.File;
 
+    private PageObjectFile? SelectedPageObject =>
+        (_pageObjectBox.SelectedItem as PageObjectChoice)?.File;
+
+    private StepDefinitionFile? SelectedStepDefinitionFile =>
+        (_stepFileBox.SelectedItem as StepFileChoice)?.File;
+
     /// <summary>
-    /// Writes everything the run produced straight into the solution.
-    ///
-    /// Auto-saving is what the user asked for, so the guard rails moved into
-    /// SolutionWriter: it backs up any file it is about to overwrite, which matters
-    /// because appending a scenario rewrites the whole feature file.
+    /// Puts what the last run produced into the three code tabs. The single-artifact
+    /// fallback (static template, or a plain NUnit fixture with no Gherkin solution linked)
+    /// has no Feature or Page Object file, so those tabs are simply left blank rather than
+    /// treated as an error - there is nothing wrong, there is just nothing to show there.
     /// </summary>
-    private void AutoSave(AgentResult result)
+    private void PopulateArtifactTabs()
     {
-        if (_solutionProfile is not { IsUsable: true } || result.Artifacts.Count == 0)
+        _featureTextBox.Text = ContentFor(ArtifactKind.Feature);
+        _pageObjectTextBox.Text = ContentFor(ArtifactKind.PageObject);
+        // A plain fixture (ArtifactKind.Test) is the closest thing to runnable code this
+        // app produces without a Gherkin solution, so it lands on the Steps tab.
+        _stepsTextBox.Text = ContentFor(ArtifactKind.StepDefinitions, fallback: ArtifactKind.Test);
+    }
+
+    private string ContentFor(ArtifactKind kind, ArtifactKind? fallback = null)
+    {
+        var artifact = _lastArtifacts.FirstOrDefault(a => a.Kind == kind)
+                       ?? (fallback.HasValue ? _lastArtifacts.FirstOrDefault(a => a.Kind == fallback) : null);
+
+        return artifact?.Content.ReplaceLineEndings() ?? "";
+    }
+
+    /// <summary>
+    /// Opens the active tab's content in a full-window editor. Saving updates the in-memory
+    /// artifact (and the read-only preview box) but writes nothing to disk - that only
+    /// happens when Insert is pressed, so a half-finished edit can never end up on disk.
+    /// </summary>
+    private void EditActiveArtifact()
+    {
+        var kind = ActiveArtifactKind;
+        if (kind == null)
+        {
+            SetStatus("Nothing to edit on the Log tab.", Theme.Warning);
+            return;
+        }
+
+        var artifact = _lastArtifacts.FirstOrDefault(a => a.Kind == kind)
+                       ?? (kind == ArtifactKind.StepDefinitions ? _lastArtifacts.FirstOrDefault(a => a.Kind == ArtifactKind.Test) : null);
+
+        if (artifact == null)
+        {
+            SetStatus("Generate a test first.", Theme.Warning);
+            return;
+        }
+
+        using var dialog = new CodeEditorDialog($"Edit {ActiveOutputName}", artifact.Content);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
-        var written = SolutionWriter.Write(_solutionProfile, result.Artifacts);
+        artifact.Content = dialog.Content;
+        ActiveOutputBox.Text = artifact.Content.ReplaceLineEndings();
+        SetStatus($"Updated the {ActiveOutputName}. Press Insert to write it into the solution.", Theme.TextSecondary);
+    }
+
+    /// <summary>
+    /// Writes everything the last run produced - including any edits made through the Edit
+    /// window - into the solution. This is the explicit step the user triggers after
+    /// reviewing the output; nothing is written automatically any more.
+    /// </summary>
+    private void InsertToSolution()
+    {
+        if (_solutionProfile is not { IsUsable: true })
+        {
+            SetStatus("Link a solution in Settings first.", Theme.Warning);
+            return;
+        }
+
+        if (_lastArtifacts.Count == 0)
+        {
+            SetStatus("Generate a test first.", Theme.Warning);
+            return;
+        }
+
+        var written = SolutionWriter.Write(_solutionProfile, _lastArtifacts);
 
         if (written.Count == 0)
         {
-            SetStatus("Generated, but nothing could be written to the solution. See Log.", Theme.Danger);
+            SetStatus("Nothing could be written to the solution. See Log.", Theme.Danger);
             return;
         }
 
         var names = string.Join(", ", written.Select(a => Path.GetFileName(a.WrittenPath!)));
-        SetStatus($"Saved to solution: {names}", Theme.Accent);
+        SetStatus($"Inserted into solution: {names}", Theme.Accent);
 
-        // Picking up a newly created feature file requires a rescan.
+        ClearScreenshots();
+
+        // Picking up a newly created (or newly extended) file requires a rescan.
         RescanSolution();
     }
 
@@ -988,12 +1384,17 @@ public partial class MainForm : Form
 
         try
         {
-            var selected = SelectedFeature?.Path;
+            var selectedFeature = SelectedFeature?.Path;
+            var selectedPageObject = SelectedPageObject?.Path;
+            var selectedStepFile = SelectedStepDefinitionFile?.Path;
+
             _solutionProfile = SolutionScanner.Scan(_settings.TestSolutionPath);
             _agent = new ExplorationAgent(BuildGenerator(), _solutionProfile);
 
-            PopulateFeatureFiles();
-            RestoreFeatureSelection(selected);
+            PopulateTargetPickers();
+            RestoreSelection(_featureBox, selectedFeature, (FeatureChoice c) => c.File?.Path);
+            RestoreSelection(_pageObjectBox, selectedPageObject, (PageObjectChoice c) => c.File?.Path);
+            RestoreSelection(_stepFileBox, selectedStepFile, (StepFileChoice c) => c.File?.Path);
         }
         catch (Exception ex)
         {
@@ -1001,30 +1402,33 @@ public partial class MainForm : Form
         }
     }
 
-    private void RestoreFeatureSelection(string? path)
+    /// <summary>Re-selects whichever item still matches the given path after a rescan replaced the list.</summary>
+    private static void RestoreSelection<TChoice>(DarkComboBox box, string? path, Func<TChoice, string?> pathOf)
+        where TChoice : class
     {
         if (path == null)
             return;
 
-        for (var i = 0; i < _featureBox.Items.Count; i++)
+        for (var i = 0; i < box.Items.Count; i++)
         {
-            if (_featureBox.Items[i] is FeatureChoice { File: not null } choice &&
-                string.Equals(choice.File.Path, path, StringComparison.OrdinalIgnoreCase))
+            if (box.Items[i] is TChoice choice &&
+                string.Equals(pathOf(choice), path, StringComparison.OrdinalIgnoreCase))
             {
-                _featureBox.SelectedIndex = i;
+                box.SelectedIndex = i;
                 return;
             }
         }
     }
 
-    private void UpdateSaveButtonState()
+    private void UpdateInsertButtonState()
     {
-        _saveToSolutionButton.Enabled = _solutionProfile is { IsUsable: true };
+        var solutionReady = _solutionProfile is { IsUsable: true };
+
+        _openFolderButton.Enabled = solutionReady;
+        _insertButton.Enabled = solutionReady && _lastArtifacts.Count > 0;
     }
 
-    /// <summary>
-    /// Files are written automatically now, so this just reveals where they landed.
-    /// </summary>
+    /// <summary>Reveals where generated files land, independent of whether anything has been inserted yet.</summary>
     private void OpenSolutionFolder()
     {
         var folder = _solutionProfile switch

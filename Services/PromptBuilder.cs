@@ -26,7 +26,9 @@ public class PromptBuilder
         DomSnapshot dom,
         SolutionProfile? profile = null,
         IReadOnlyList<RecordedAction>? recordedActions = null,
-        FeatureFile? targetFeature = null)
+        FeatureFile? targetFeature = null,
+        PageObjectFile? targetPageObject = null,
+        StepDefinitionFile? targetStepDefinitions = null)
     {
         var prompt = new StringBuilder();
 
@@ -48,7 +50,7 @@ public class PromptBuilder
         // the model read past a large DOM dump and produced a standalone test that
         // ignored the linked solution's base class and namespace entirely.
         if (profile is { CanWriteGherkin: true })
-            AppendGherkinContract(prompt, profile, targetFeature);
+            AppendGherkinContract(prompt, profile, targetFeature, targetPageObject, targetStepDefinitions);
         else if (profile is { IsUsable: true })
             AppendHouseStyle(prompt, profile);
         else
@@ -145,19 +147,49 @@ public class PromptBuilder
     /// BDD suite decays quickly when every generated scenario invents a near-duplicate of
     /// a step that already exists.
     /// </summary>
-    private static void AppendGherkinContract(StringBuilder prompt, SolutionProfile profile, FeatureFile? targetFeature)
+    private static void AppendGherkinContract(
+        StringBuilder prompt,
+        SolutionProfile profile,
+        FeatureFile? targetFeature,
+        PageObjectFile? targetPageObject,
+        StepDefinitionFile? targetStepDefinitions)
     {
         prompt.AppendLine("=== OUTPUT CONTRACT: GHERKIN (MANDATORY) ===");
         prompt.AppendLine("This is a Reqnroll BDD suite. Produce Gherkin plus C# bindings - never a bare NUnit test.");
         prompt.AppendLine();
-        prompt.AppendLine("Return exactly two files, each introduced by its own marker line on its own line:");
+        prompt.AppendLine("Return exactly three files, each introduced by its own marker line on its own line:");
         prompt.AppendLine();
         prompt.AppendLine("FILE: <Name>.feature");
         prompt.AppendLine("<the complete Gherkin>");
+        prompt.AppendLine("FILE: <Name>Page.cs");
+        prompt.AppendLine("<the complete page object>");
         prompt.AppendLine("FILE: <Name>Steps.cs");
-        prompt.AppendLine("<the complete C# step definition class>");
+        prompt.AppendLine("<the complete step definition class>");
         prompt.AppendLine();
-        prompt.AppendLine("No prose before, between or after the two files. No markdown fences.");
+        prompt.AppendLine("No prose before, between or after the files. No markdown fences.");
+        prompt.AppendLine();
+        prompt.AppendLine("=== HOW THE THREE FILES DIVIDE THE WORK ===");
+        prompt.AppendLine("This split is the point of the exercise, not a formatting preference. A selector");
+        prompt.AppendLine("written inline in a step can never be reused and has to be re-found by hand every");
+        prompt.AppendLine("time the page changes; the same selector on a page object is fixed in one place.");
+        prompt.AppendLine();
+        prompt.AppendLine("PAGE OBJECT - everything that knows what the page looks like:");
+        prompt.AppendLine("  - Selectors as private const strings, and locators as private ILocator properties.");
+        prompt.AppendLine("  - An Actions section: methods that DO something (GotoAsync, SignInAsync, ClickX).");
+        prompt.AppendLine("  - A Queries section: methods that RETURN a settled value for the step to judge");
+        prompt.AppendLine("    (Task<bool> IsXVisibleAsync, Task<string> GetXTextAsync, Task<int> GetXCountAsync).");
+        prompt.AppendLine("  - A query must WAIT for its value to settle before returning it - a WaitForAsync,");
+        prompt.AppendLine("    WaitForURLAsync or WaitForFunctionAsync - then hand the value back. A one-shot read");
+        prompt.AppendLine("    with no wait reintroduces exactly the race the wait exists to close.");
+        prompt.AppendLine("  - Take IPage through the constructor. NO assertions anywhere in this file.");
+        prompt.AppendLine();
+        prompt.AppendLine("STEP DEFINITIONS - assertions and nothing else:");
+        prompt.AppendLine("  - Construct or hold the page object, call its methods, assert on what comes back.");
+        prompt.AppendLine("  - NO selectors, NO Locator(...) calls, NO GetByRole/GetByText, NO waits, NO try/catch.");
+        prompt.AppendLine("  - If you find yourself needing a selector here, the page object is missing a method:");
+        prompt.AppendLine("    add it there and call it from here.");
+        prompt.AppendLine();
+        prompt.AppendLine("FEATURE - business language only, no UI mechanics.");
         prompt.AppendLine();
 
         if (targetFeature != null)
@@ -190,16 +222,79 @@ public class PromptBuilder
             prompt.AppendLine();
             prompt.AppendLine("In the steps file, include ONLY the genuinely new step methods.");
             prompt.AppendLine("Never redefine a step listed above - Reqnroll fails at runtime on duplicate bindings.");
-            prompt.AppendLine("Because that file holds only the new bindings, give it a NEW name that does not");
-            prompt.AppendLine("collide with an existing step class, so nothing already written is replaced.");
             prompt.AppendLine();
         }
 
-        if (profile.StepClassSource != null)
+        if (targetStepDefinitions != null)
         {
-            prompt.AppendLine($"--- existing binding class to imitate: {profile.StepClassName} ---");
-            prompt.AppendLine(profile.StepClassSource);
+            prompt.AppendLine($"TARGET STEP DEFINITIONS FILE: {targetStepDefinitions.FileName}");
+            prompt.AppendLine("Reproduce this file in full, adding only your genuinely new step method(s) to it.");
+            prompt.AppendLine("Keep every existing step method, using directive and attribute exactly as it is -");
+            prompt.AppendLine("do not remove, reword or reorder anything already there.");
+            prompt.AppendLine($"Name the class and file exactly: {targetStepDefinitions.ClassName} / {targetStepDefinitions.FileName}");
             prompt.AppendLine();
+            prompt.AppendLine($"--- current contents of {targetStepDefinitions.FileName} ---");
+            prompt.AppendLine(targetStepDefinitions.Source);
+            prompt.AppendLine();
+        }
+        else
+        {
+            if (profile.StepClassSource != null)
+            {
+                prompt.AppendLine($"--- existing binding class to imitate: {profile.StepClassName} ---");
+                prompt.AppendLine(profile.StepClassSource);
+                prompt.AppendLine();
+            }
+
+            prompt.AppendLine("No existing step-definitions file was selected as a target, so give the new");
+            prompt.AppendLine("bindings file a NEW name that does not collide with an existing step class -");
+            prompt.AppendLine("that file must hold only the new bindings, nothing already written.");
+            prompt.AppendLine();
+        }
+
+        if (targetPageObject != null)
+        {
+            prompt.AppendLine($"TARGET PAGE OBJECT FILE: {targetPageObject.FileName}");
+            prompt.AppendLine("Reproduce this file in full, adding your new action/query method(s) to it.");
+            prompt.AppendLine("Keep every existing selector, locator property and method exactly as it is.");
+            prompt.AppendLine($"Name the class and file exactly: {targetPageObject.ClassName} / {targetPageObject.FileName}");
+            prompt.AppendLine();
+            prompt.AppendLine($"--- current contents of {targetPageObject.FileName} ---");
+            prompt.AppendLine(targetPageObject.Source);
+            prompt.AppendLine();
+        }
+        else
+        {
+            if (profile.PageObjects.Count > 0)
+            {
+                prompt.AppendLine("=== PAGE OBJECTS THAT ALREADY EXIST - EXTEND, DO NOT DUPLICATE ===");
+                prompt.AppendLine("If one of these covers the page under test, add your method to it and return that");
+                prompt.AppendLine("whole file as your page object. Two page objects for one screen, each holding half");
+                prompt.AppendLine("the selectors, is the same decay as duplicate step bindings.");
+                prompt.AppendLine();
+
+                foreach (var page in profile.PageObjects)
+                {
+                    var methods = page.Methods.Count > 0 ? string.Join(", ", page.Methods.Take(12)) : "(no public methods)";
+                    prompt.AppendLine($"  {page.ClassName}  [{page.FileName}]");
+                    prompt.AppendLine($"    methods: {methods}");
+                }
+
+                prompt.AppendLine();
+            }
+
+            if (profile.ExamplePageObject != null)
+            {
+                prompt.AppendLine($"--- existing page object to imitate: {profile.ExamplePageObject.ClassName} ---");
+                prompt.AppendLine(profile.ExamplePageObject.Source);
+                prompt.AppendLine();
+            }
+            else
+            {
+                prompt.AppendLine("No existing page object was selected as a target, so create a new one named");
+                prompt.AppendLine("after the page under test.");
+                prompt.AppendLine();
+            }
         }
 
         prompt.AppendLine($"- Step definition namespace: {profile.TestNamespace}.StepDefinitions");
@@ -276,8 +371,10 @@ public class PromptBuilder
         {
             prompt.AppendLine();
             prompt.AppendLine("=== THIS IS THE PART MOST OFTEN GOT WRONG - CHECK IT ===");
-            prompt.AppendLine("- Output TWO files, each preceded by its own 'FILE: <name>' marker line.");
-            prompt.AppendLine("- The first is Gherkin (.feature). The second is C# bindings (.cs).");
+            prompt.AppendLine("- Output THREE files, each preceded by its own 'FILE: <name>' marker line:");
+            prompt.AppendLine("  the .feature, then <Name>Page.cs, then <Name>Steps.cs.");
+            prompt.AppendLine("- The page object holds every selector. The step file holds none - if a selector");
+            prompt.AppendLine("  appears in the step file, the split has failed and the output is wrong.");
             prompt.AppendLine("- Do NOT emit a [TestFixture] or a [Test] method. This suite is Gherkin-driven.");
             prompt.AppendLine("- Reuse the existing step wordings listed above; do not redefine them.");
             prompt.AppendLine("- Scenario steps read as behaviour, not as UI mechanics: prefer");

@@ -17,4 +17,17 @@ public class ExplorationRequest
     /// Existing feature file to append the new scenario to. Null means create a new one.
     /// </summary>
     public string? TargetFeaturePath { get; set; }
+
+    /// <summary>Existing page object to extend with a new method. Null means create a new one.</summary>
+    public string? TargetPageObjectPath { get; set; }
+
+    /// <summary>Existing step-definitions class to append new bindings to. Null means create a new one.</summary>
+    public string? TargetStepDefinitionsPath { get; set; }
+
+    /// <summary>
+    /// Folder to save debug screenshots into, from Settings. Null/blank disables capture.
+    /// Only used for a typed-objective run (RecordedActions is empty) - a recording captures
+    /// its own screenshots separately, one per action, as it happens.
+    /// </summary>
+    public string? ScreenshotsPath { get; set; }
 }

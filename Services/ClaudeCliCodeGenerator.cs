@@ -162,7 +162,7 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
                 Console.Error.WriteLine($"claude: {stderr.Trim()}");
 
             if (process.ExitCode != 0)
-                throw new InvalidOperationException($"Claude Code CLI exited with code {process.ExitCode}. {stderr.Trim()}");
+                throw new InvalidOperationException(DescribeFailure(process.ExitCode, stdout, stderr));
 
             return ExtractResult(stdout);
         }
@@ -172,6 +172,89 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
             Console.WriteLine("Claude Code CLI cancelled.");
             throw;
         }
+    }
+
+    /// <summary>
+    /// Turns a non-zero exit into something the user can act on.
+    ///
+    /// The CLI still prints its JSON envelope when it fails, and the real reason lives in
+    /// that envelope's "result" - an expired OAuth session, for instance. Reporting only
+    /// "exited with code 1" throws that away and sends the user hunting for a bug in this
+    /// app when the fix is to re-run `claude` and log in.
+    /// </summary>
+    private static string DescribeFailure(int exitCode, string stdout, string stderr)
+    {
+        var detail = "";
+
+        try
+        {
+            var trimmed = stdout.Trim();
+            if (trimmed.StartsWith('{'))
+            {
+                using var document = JsonDocument.Parse(trimmed);
+                if (document.RootElement.TryGetProperty("result", out var result) &&
+                    result.ValueKind == JsonValueKind.String)
+                {
+                    detail = result.GetString() ?? "";
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON; fall back to stderr below.
+        }
+
+        if (string.IsNullOrWhiteSpace(detail))
+            detail = stderr.Trim();
+
+        if (string.IsNullOrWhiteSpace(detail))
+            return $"Claude Code CLI exited with code {exitCode} without explaining why.";
+
+        // Point straight at the remedy for the failure that is by far the most common.
+        if (IsAuthenticationFailure(detail))
+            return $"{detail}  ->  run 'claude' in a terminal and sign in again, then retry.";
+
+        return detail;
+    }
+
+    /// <summary>
+    /// True when a failure message describes an expired or missing CLI login rather than
+    /// some other error. Callers use this to decide whether opening a sign-in terminal
+    /// (<see cref="OpenSignInTerminal"/>) would actually help.
+    /// </summary>
+    public static bool IsAuthenticationFailure(string? message) =>
+        message != null && (
+            message.Contains("authenticate", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("OAuth", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("log in", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Opens a normal, visible console window running the CLI interactively so the user can
+    /// sign in themselves.
+    ///
+    /// This app never stores or handles Claude credentials, so there is no "log in for the
+    /// user" path here - the only way to recover from an expired CLI session is the CLI's
+    /// own interactive login, which starting `claude` with no arguments triggers (it prompts
+    /// to authenticate, typically by opening the user's browser to complete OAuth). Routed
+    /// through cmd.exe /k so the window stays open afterwards instead of closing the instant
+    /// login finishes, and so a .cmd shim (npm's global install on Windows) launches the same
+    /// way a .exe would.
+    /// </summary>
+    public void OpenSignInTerminal()
+    {
+        var workingDirectory = Path.Combine(Path.GetTempPath(), "PlaywrightAgentAI.cli");
+        Directory.CreateDirectory(workingDirectory);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+            Arguments = $"/k \"{_cliPath}\"",
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Normal
+        };
+
+        Process.Start(startInfo);
     }
 
     private IEnumerable<string> BuildArguments(string instruction)

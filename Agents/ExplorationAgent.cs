@@ -34,12 +34,12 @@ public class ExplorationAgent
         try
         {
             Console.WriteLine($"Analyzing {request.Url}...");
-            var html = await _explorer.CaptureDom(request.Url, cancellationToken);
+            await using var capture = await _explorer.Capture(request.Url, cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
             // Pass TestObjective so analyzer can locate the exact section
-            var dom = await _analyzer.Analyze(html, request.TestObjective);
+            var dom = await _analyzer.Analyze(capture.Html, request.TestObjective);
 
             Console.WriteLine($"Detected {dom.Headings.Count} headings, {dom.Elements.Count} sections, {dom.Buttons.Count} buttons");
 
@@ -51,6 +51,13 @@ public class ExplorationAgent
             {
                 result.Warnings.Add("No page sections could be extracted; the prompt will only contain element lists.");
             }
+
+            // A recording captures its own screenshot per action as it happens - only a
+            // typed-objective run (no recorded actions) needs one taken here, of whichever
+            // section actually matched, so the user can confirm the right part of the page
+            // was tested.
+            if (request.RecordedActions.Count == 0 && !string.IsNullOrWhiteSpace(request.ScreenshotsPath))
+                await CaptureSectionScreenshot(capture, dom, request.ScreenshotsPath, result);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -90,7 +97,17 @@ public class ExplorationAgent
                 if (targetFeature != null)
                     Console.WriteLine($"Appending a scenario to {targetFeature.FileName}.");
 
-                var prompt = promptBuilder.Build(userRequest, dom, _profile, request.RecordedActions, targetFeature);
+                var targetPageObject = ResolveTargetPageObject(request.TargetPageObjectPath);
+                if (targetPageObject != null)
+                    Console.WriteLine($"Extending page object {targetPageObject.FileName}.");
+
+                var targetStepDefinitions = ResolveTargetStepDefinitions(request.TargetStepDefinitionsPath);
+                if (targetStepDefinitions != null)
+                    Console.WriteLine($"Appending bindings to {targetStepDefinitions.FileName}.");
+
+                var prompt = promptBuilder.Build(
+                    userRequest, dom, _profile, request.RecordedActions,
+                    targetFeature, targetPageObject, targetStepDefinitions);
                 var code = await _aiGenerator.Generate(prompt, cancellationToken);
 
                 if (string.IsNullOrWhiteSpace(code))
@@ -105,6 +122,15 @@ public class ExplorationAgent
                 result.GeneratedCode = code;
                 result.Artifacts = ArtifactParser.Parse(code);
 
+                // Stamp the explicit target back onto the matching artifact by identity
+                // (the full path), rather than trusting the model to echo the filename
+                // back exactly. SolutionWriter overwrites unconditionally wherever
+                // TargetPath is set, so this is what makes "insert into this exact file"
+                // reliable even if the model's FILE: name differs slightly.
+                ApplyTarget(result, ArtifactKind.Feature, targetFeature?.Path);
+                ApplyTarget(result, ArtifactKind.PageObject, targetPageObject?.Path);
+                ApplyTarget(result, ArtifactKind.StepDefinitions, targetStepDefinitions?.Path);
+
                 DescribeArtifacts(result);
                 return result;
             }
@@ -116,6 +142,10 @@ public class ExplorationAgent
             {
                 Console.Error.WriteLine($"Error: AI code generation failed: {ex.Message}");
                 Console.Error.WriteLine("Falling back to basic template...");
+
+                if (_aiGenerator is ClaudeCliCodeGenerator cli && ClaudeCliCodeGenerator.IsAuthenticationFailure(ex.Message))
+                    TryOpenSignInTerminal(cli, result);
+
                 result.Warnings.Add($"AI code generation failed ({ex.Message}); fell back to the static template.");
                 result.GeneratedCode = _builder.Build(request.Url, dom);
                 return result;
@@ -133,6 +163,40 @@ public class ExplorationAgent
         }
     }
 
+    /// <summary>
+    /// Screenshots the section the objective matched (or the viewport, if none did) into the
+    /// configured debug folder, and records it on the result so the UI can show it.
+    /// </summary>
+    private static async Task CaptureSectionScreenshot(DomCapture capture, DomSnapshot dom, string screenshotsFolder, AgentResult result)
+    {
+        try
+        {
+            ScreenshotCapture.ClearFolder(screenshotsFolder);
+
+            // The matched key IS the heading's own text (trimmed, lowercased) - passed
+            // straight through rather than via SectionSelectors, whose selector for an
+            // unclassed container is just a tag name and can match more than one element.
+            var bytes = await capture.ScreenshotSectionAsync(dom.MatchedSectionKey);
+            if (bytes == null)
+                return;
+
+            var path = Path.Combine(screenshotsFolder, "001.png");
+            Directory.CreateDirectory(screenshotsFolder);
+            await File.WriteAllBytesAsync(path, bytes);
+
+            var description = dom.MatchedSectionKey != null
+                ? $"Matched section: {dom.MatchedSectionKey}"
+                : "Full page (no specific section matched)";
+
+            result.Screenshots.Add(new ScreenshotEntry { Index = 1, FilePath = path, Description = description });
+            Console.WriteLine($"Captured a screenshot of the tested area ({description}).");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not capture a screenshot of the tested area: {ex.Message}");
+        }
+    }
+
     private FeatureFile? ResolveTargetFeature(string? path)
     {
         if (string.IsNullOrWhiteSpace(path) || _profile == null)
@@ -142,9 +206,58 @@ public class ExplorationAgent
             f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase));
     }
 
+    private PageObjectFile? ResolveTargetPageObject(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || _profile == null)
+            return null;
+
+        return _profile.PageObjects.FirstOrDefault(
+            p => string.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private StepDefinitionFile? ResolveTargetStepDefinitions(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || _profile == null)
+            return null;
+
+        return _profile.StepDefinitionFiles.FirstOrDefault(
+            f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>
-    /// A Gherkin run must produce both a feature and its bindings. Saying so plainly
-    /// beats silently writing half a change the user then has to debug.
+    /// The CLI session expired, so hand the login flow to the user directly rather than
+    /// asking them to go find a terminal themselves: opens a real console window running
+    /// `claude` interactively, which prompts its own sign-in (normally a browser OAuth
+    /// flow). This app never touches or stores Claude credentials, so this is the full
+    /// extent of what it can automate here.
+    /// </summary>
+    private static void TryOpenSignInTerminal(ClaudeCliCodeGenerator cli, AgentResult result)
+    {
+        try
+        {
+            Console.WriteLine("Opening a terminal so you can sign in to Claude Code...");
+            cli.OpenSignInTerminal();
+            result.Warnings.Add("Opened a terminal for you to sign in to Claude Code. Once you're signed in, retry.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not open a sign-in terminal: {ex.Message}");
+        }
+    }
+
+    private static void ApplyTarget(AgentResult result, ArtifactKind kind, string? targetPath)
+    {
+        if (targetPath == null)
+            return;
+
+        var artifact = result.Artifacts.FirstOrDefault(a => a.Kind == kind);
+        if (artifact != null)
+            artifact.TargetPath = targetPath;
+    }
+
+    /// <summary>
+    /// A Gherkin run must produce all three files. Saying so plainly beats silently
+    /// writing a partial change the user then has to debug.
     /// </summary>
     private void DescribeArtifacts(AgentResult result)
     {
@@ -156,6 +269,9 @@ public class ExplorationAgent
 
         if (!result.Artifacts.Any(a => a.Kind == ArtifactKind.Feature))
             result.Warnings.Add("No .feature file was produced - the model did not follow the Gherkin contract.");
+
+        if (!result.Artifacts.Any(a => a.Kind == ArtifactKind.PageObject))
+            result.Warnings.Add("No page object was produced; locators may be missing or stuck inline in the steps.");
 
         if (!result.Artifacts.Any(a => a.Kind == ArtifactKind.StepDefinitions))
             result.Warnings.Add("No step definitions file was produced; the scenario may have no bindings.");

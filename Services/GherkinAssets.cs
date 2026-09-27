@@ -32,6 +32,24 @@ public record StepBinding(string Keyword, string Pattern)
     public override string ToString() => $"[{Keyword}(\"{Pattern}\")]";
 }
 
+/// <summary>A [Binding] class discovered in the linked solution, offered as a target to extend.</summary>
+public class StepDefinitionFile
+{
+    public required string Path { get; init; }
+
+    public string FileName => System.IO.Path.GetFileName(Path);
+
+    public string ClassName { get; set; } = "";
+
+    public int BindingCount { get; set; }
+
+    /// <summary>Full text, used as the file to reproduce when appending new steps to it.</summary>
+    public string Source { get; set; } = "";
+
+    public override string ToString() =>
+        BindingCount == 0 ? ClassName : $"{ClassName}  ({BindingCount} step{(BindingCount == 1 ? "" : "s")})";
+}
+
 /// <summary>
 /// Reads the Gherkin side of a solution: feature files, their scenarios, and the step
 /// bindings that already exist.
@@ -134,6 +152,54 @@ public static partial class GherkinAssets
         return bindings;
     }
 
+    /// <summary>
+    /// Finds every [Binding] class, so the user can target one directly instead of always
+    /// getting a brand-new file. Grouped by file rather than by binding: two classes could
+    /// share a near-identical step wording, but the file is the unit the writer overwrites.
+    /// </summary>
+    public static List<StepDefinitionFile> FindStepDefinitionFiles(string root)
+    {
+        var files = new List<StepDefinitionFile>();
+
+        if (!Directory.Exists(root))
+            return files;
+
+        foreach (var path in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+        {
+            if (IsBuildOutput(path))
+                continue;
+
+            string text;
+            try
+            {
+                text = File.ReadAllText(path);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!text.Contains("[Binding]", StringComparison.Ordinal))
+                continue;
+
+            var bindingCount = StepAttribute().Matches(text).Count;
+            if (bindingCount == 0)
+                continue;
+
+            var classMatch = BindingClassName().Match(text);
+
+            files.Add(new StepDefinitionFile
+            {
+                Path = path,
+                ClassName = classMatch.Success ? classMatch.Groups["name"].Value : Path.GetFileNameWithoutExtension(path),
+                BindingCount = bindingCount,
+                Source = text.Length <= MaxFeatureSourceLength ? text : text[..MaxFeatureSourceLength] + "\n// ... [truncated]"
+            });
+        }
+
+        return files.OrderBy(f => f.FileName, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     /// <summary>Finds the folder holding a given kind of file, so new ones land beside them.</summary>
     public static string? FindDirectoryContaining(string root, string searchPattern)
     {
@@ -153,4 +219,7 @@ public static partial class GherkinAssets
 
     [GeneratedRegex(@"\[(?<kw>Given|When|Then|StepDefinition)\(\s*""(?<pattern>[^""]+)""")]
     private static partial Regex StepAttribute();
+
+    [GeneratedRegex(@"\bclass\s+(?<name>\w+)")]
+    private static partial Regex BindingClassName();
 }
