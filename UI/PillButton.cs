@@ -125,7 +125,10 @@ public class PillButton : Button
             g, Text, font, bounds, text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
-        if (Focused && Enabled)
+        // An Outline button already has a visible border, so the focus ring would draw
+        // right alongside it and read as a double border - only styles with no border of
+        // their own (Primary, Ghost) need this as their sole focus indicator.
+        if (Focused && Enabled && border.A == 0)
         {
             using var focusPen = new Pen(Theme.Mix(text, Theme.Page, 0.55), 1f) { DashStyle = DashStyle.Dot };
             using var focusPath = Theme.RoundedRect(Rectangle.Inflate(bounds, -4, -4), Math.Max(0, radius - 4));
