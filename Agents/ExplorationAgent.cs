@@ -202,10 +202,17 @@ public class ExplorationAgent
 
         try
         {
-            var lookup = await AdoPbiLookup.Fetch(cli, reference, organization, project, cancellationToken);
+            var lookup = await AdoPbiLookup.Fetch(cli, reference, organization, project, _profile?.RootPath, cancellationToken);
 
             foreach (var problem in lookup.Problems)
                 Console.Error.WriteLine($"Azure DevOps: {problem}");
+
+            // The user's skills are meant to be the authority on how Azure DevOps is reached,
+            // so say plainly which were used - and when none were, that the built-in recipe was.
+            if (lookup.SkillsConsulted is { Count: > 0 })
+                Console.WriteLine($"Azure DevOps: consulted skill(s) {string.Join(", ", lookup.SkillsConsulted)}.");
+            else
+                Console.WriteLine("Azure DevOps: no skill was consulted; the built-in az recipe was used instead.");
 
             if (lookup.Context == null)
                 return null;

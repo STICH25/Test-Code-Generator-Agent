@@ -126,7 +126,10 @@ paste its work-item link), and the PBI and its linked Test Cases are read from A
 scenarios follow the real test steps rather than just the acceptance criteria. The result is marked in
 the status bar ("Built from PBI 4242 (2 linked test case(s))") and each scenario carries a
 `# ADO Test Case <id>` comment, unless your solution already puts IDs in its scenario titles, in which
-case that format is followed. This needs the Claude Code CLI provider and the Azure CLI (`az`, with
+case that format is followed. The reading is done by Claude using your own `gherkin-to-ado-testcases`
+and `specforge-reqnroll` skills (the Log says which were consulted), so it reaches Azure DevOps the same
+way those skills already do for you, and it runs from your linked solution's folder so that repo's
+`CLAUDE.md` is found. This needs the Claude Code CLI provider and the Azure CLI (`az`, with
 its `azure-devops` extension, signed in via `az login`); set a default organization and project under
 *Settings → Azure DevOps* if you refer to PBIs by number only. It is **read-only** — nothing is created
 or changed in Azure DevOps — and no Azure DevOps credential is stored by this app. If the lookup fails

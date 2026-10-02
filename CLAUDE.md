@@ -137,15 +137,32 @@ story" / "ADO" (`PbiReferenceFinder`; a bare number never counts) — `Explorati
 reads it and its linked Test Cases and feeds them into the prompt, so scenarios come from the real
 test steps instead of the PBI's thin acceptance criteria.
 
-**Claude does the reading, not the app.** `AdoPbiLookup` runs a second, multi-turn `claude` call
-(`ClaudeCliCodeGenerator.RunRestricted`) and tells it to follow the `gherkin-to-ado-testcases` skill
-(how to reach ADO through `az`) and `specforge-reqnroll` step 1 (PBI → `TestedBy-Forward` relations →
-each Test Case's `Microsoft.VSTS.TCM.Steps`), then reply with JSON. The skills are consulted live, so
-changing one changes the behaviour with no code change; if they are absent the payload spells out the
-same `az boards work-item show` recipe. It runs under the user's own `az login` — the app never sees
+**Claude does the reading, not the app, and the user's skills are the authority on how.**
+`AdoPbiLookup` runs a second, multi-turn `claude` call (`ClaudeCliCodeGenerator.RunRestricted`) whose
+first required action is to load the `gherkin-to-ado-testcases` skill (how ADO is reached) and
+`specforge-reqnroll` step 1 (PBI → `TestedBy-Forward` relations → each Test Case's
+`Microsoft.VSTS.TCM.Steps`), then reply with JSON. The skills are consulted live, so changing one
+changes the behaviour with no code change. The user already runs these skills against their own ADO
+(credentials set up on their work machine), which is why they must be used rather than re-implemented.
+
+**Do not hand Claude the full recipe up front.** The first version embedded the `az boards work-item
+show` commands in the message, and Claude then never loaded a skill at all — it just ran the recipe.
+That was found by reading the run's transcript, not from the output, which looked right. The recipe
+now sits under "FALLBACK - only if a skill cannot be loaded". The reply includes `skillsUsed`, and the
+Log says "consulted skill(s) ..." or "no skill was consulted; the built-in az recipe was used".
+That is Claude's own account, so to *verify*, search the run's transcript for `"name":"Skill"`:
+`~/.claude/projects/<slug of the working directory>/*.jsonl`.
+
+The call runs **from the linked solution's folder**, not the scratch folder generation uses
+(`CliRunOptions.WorkingDirectory`), because that is how the user runs the skill: it finds that repo's
+`CLAUDE.md` (the skill looks there for the ADO organization and project) and any project-level skills
+or settings. Nothing is written there — the tool allow-list has no write access and the prompt log
+stays in `%TEMP%\PlaywrightAgentAI.cli`. It runs under the user's own `az login`; the app never sees
 an ADO credential. Organization/project come from the objective's link, else **Settings → Azure
-DevOps**. It needs the CLI provider, `az`, and the `azure-devops` extension; the MCP route in the
-skills is not supported here.
+DevOps**, else the repo's `CLAUDE.md`. It needs the CLI provider, `az`, and the `azure-devops`
+extension. **The MCP route the skills also describe is not supported**: its tools are not in the
+allow-list, so they would be denied. Add one only once the server name and the exact read-only tool
+names are known from a machine that uses it — do not guess, since "read-only" has to stay true.
 
 **It is read-only, enforced by the CLI rather than by prompt wording.** The call's `--allowedTools` is
 `Skill` plus `az boards work-item show / account show / extension show / version / devops project

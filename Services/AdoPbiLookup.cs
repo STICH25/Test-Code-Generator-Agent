@@ -5,7 +5,15 @@ using PlaywrightAgentAI.Models;
 namespace PlaywrightAgentAI.Services;
 
 /// <summary>What a PBI lookup produced: the context if it worked, and whatever went wrong either way.</summary>
-public sealed record PbiLookupResult(PbiContext? Context, IReadOnlyList<string> Problems);
+/// <param name="SkillsConsulted">
+/// The skills Claude reports having loaded (its own account, so a diagnostic, not a guarantee).
+/// Empty means it worked from the built-in fallback recipe instead - worth knowing, because
+/// the user's skills are meant to be the authority on how Azure DevOps is reached.
+/// </param>
+public sealed record PbiLookupResult(
+    PbiContext? Context,
+    IReadOnlyList<string> Problems,
+    IReadOnlyList<string>? SkillsConsulted = null);
 
 /// <summary>
 /// Reads a PBI and its linked Test Cases from Azure DevOps by asking Claude to do it.
@@ -57,13 +65,20 @@ public static class AdoPbiLookup
         PbiReference reference,
         string? organization,
         string? project,
+        string? workingDirectory = null,
         CancellationToken cancellationToken = default)
     {
+        // Run from the user's own solution when there is one, the way they run these skills
+        // themselves: the skill looks in the repo's CLAUDE.md for the Azure DevOps organization
+        // and project, and project-level skills and settings are found there. Nothing is
+        // written to that folder - the tool allow-list has no write access, and the prompt log
+        // stays in the scratch directory.
         var options = new CliRunOptions(
             MaxTurns: 25,
             AllowedTools: AllowedTools,
             DisallowedTools: DisallowedTools,
-            PromptLogName: "last-pbi-prompt.txt");
+            PromptLogName: "last-pbi-prompt.txt",
+            WorkingDirectory: workingDirectory);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(Timeout);
@@ -105,19 +120,25 @@ public static class AdoPbiLookup
         text.AppendLine("- Do NOT create missing Test Cases, even though the skills below describe doing so.");
         text.AppendLine("  That workflow is out of scope here: if the PBI has no linked Test Cases, say so and stop.");
         text.AppendLine();
-        text.AppendLine("HOW");
-        text.AppendLine("Use the Azure DevOps guidance you already have:");
-        text.AppendLine("- the `gherkin-to-ado-testcases` skill (references/az-cli-direct-write.md): ONLY its");
-        text.AppendLine("  preflight and how to reach ADO through the az CLI. Ignore every write step.");
-        text.AppendLine("- the `specforge-reqnroll` skill, step 1: fetch the PBI with its relations, find the");
-        text.AppendLine("  `Microsoft.VSTS.Common.TestedBy-Forward` relations (each points at a Test Case), and fetch");
-        text.AppendLine("  each Test Case's real steps from `Microsoft.VSTS.TCM.Steps`.");
-        text.AppendLine("If those skills are not available, do it directly:");
+        text.AppendLine("HOW - THE SKILLS COME FIRST");
+        text.AppendLine("Your first action must be to load these two skills with the Skill tool and follow them. They are");
+        text.AppendLine("the authority on how this user reaches Azure DevOps; do not substitute an approach of your own.");
+        text.AppendLine("  1. `gherkin-to-ado-testcases` - how Azure DevOps is reached (its preflight and access route).");
+        text.AppendLine("     Use ONLY the read-only parts; ignore every write step.");
+        text.AppendLine("  2. `specforge-reqnroll`, step 1 - fetch the PBI with its relations, find the");
+        text.AppendLine("     `Microsoft.VSTS.Common.TestedBy-Forward` relations (each points at a Test Case), and fetch");
+        text.AppendLine("     each Test Case's real steps from `Microsoft.VSTS.TCM.Steps`.");
+        text.AppendLine("Only the `az` commands listed under HARD LIMITS are permitted here. If a skill points you at an MCP");
+        text.AppendLine("tool or any other command, it will be denied - use the az route and say so under \"problems\".");
+        text.AppendLine("If the repository you are running in has a CLAUDE.md with an Azure DevOps block (organization,");
+        text.AppendLine("project), use it when organization or project above are \"not given\".");
+        text.AppendLine();
+        text.AppendLine("FALLBACK - only if a skill cannot be loaded at all:");
         text.AppendLine("  az boards work-item show --id <id> --org <organization url> --expand relations -o json");
         text.AppendLine("  then for each TestedBy-Forward relation, take the trailing id of its url and run");
         text.AppendLine("  az boards work-item show --id <testCaseId> --org <organization url> -o json");
-        text.AppendLine("If organization or project are \"not given\", try the commands without them first (az may");
-        text.AppendLine("have defaults configured); if that fails, report it under \"problems\".");
+        text.AppendLine("If organization or project are still unknown, try the commands without them first (az may have");
+        text.AppendLine("defaults configured); if that fails, report it under \"problems\".");
         text.AppendLine();
         text.AppendLine("STEP XML");
         text.AppendLine("`Microsoft.VSTS.TCM.Steps` is an XML <steps> block. Each <step> has two <parameterizedString>");
@@ -129,10 +150,12 @@ public static class AdoPbiLookup
         text.AppendLine("{");
         text.AppendLine("  \"pbi\": { \"id\": 0, \"title\": \"\", \"description\": \"\", \"acceptanceCriteria\": \"\" },");
         text.AppendLine("  \"testCases\": [ { \"id\": 0, \"title\": \"\", \"steps\": [ { \"action\": \"\", \"expected\": \"\" } ] } ],");
+        text.AppendLine("  \"skillsUsed\": [ \"\" ],");
         text.AppendLine("  \"problems\": [ \"\" ]");
         text.AppendLine("}");
-        text.AppendLine("Plain text only inside every string. If you could not read the PBI at all, set \"pbi\" to null");
-        text.AppendLine("and explain why in \"problems\". \"problems\" may be empty.");
+        text.AppendLine("Plain text only inside every string. \"skillsUsed\" lists exactly the skills you actually loaded with");
+        text.AppendLine("the Skill tool - an empty list if you loaded none. If you could not read the PBI at all, set \"pbi\"");
+        text.AppendLine("to null and explain why in \"problems\". \"problems\" may be empty.");
 
         return text.ToString();
     }
@@ -158,13 +181,14 @@ public static class AdoPbiLookup
         }
 
         var problems = (dto?.Problems ?? []).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+        var skills = (dto?.SkillsUsed ?? []).Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
 
         if (dto?.Pbi == null)
         {
             if (problems.Count == 0)
                 problems.Add($"Azure DevOps returned nothing for PBI {expectedId}.");
 
-            return new PbiLookupResult(null, problems);
+            return new PbiLookupResult(null, problems, skills);
         }
 
         var testCases = (dto.TestCases ?? [])
@@ -193,7 +217,7 @@ public static class AdoPbiLookup
             TestCases = testCases
         };
 
-        return new PbiLookupResult(context, problems);
+        return new PbiLookupResult(context, problems, skills);
     }
 
     private static string Truncate(string? value)
@@ -220,6 +244,7 @@ public static class AdoPbiLookup
         public PbiDto? Pbi { get; set; }
         public List<TestCaseDto>? TestCases { get; set; }
         public List<string>? Problems { get; set; }
+        public List<string>? SkillsUsed { get; set; }
     }
 
     private sealed class PbiDto
