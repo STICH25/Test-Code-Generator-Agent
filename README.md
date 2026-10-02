@@ -121,6 +121,17 @@ whether the right part of the page was tested. The **Screenshots** button opens 
 live only in that folder, are never written into your solution, and are deleted when you start a new
 recording, press **Clear**, or **Insert**.
 
+**Azure DevOps PBIs** — name a PBI in the objective, e.g. *"Check PBI 4242 and write the tests"* (or
+paste its work-item link), and the PBI and its linked Test Cases are read from Azure DevOps so the
+scenarios follow the real test steps rather than just the acceptance criteria. The result is marked in
+the status bar ("Built from PBI 4242 (2 linked test case(s))") and each scenario carries a
+`# ADO Test Case <id>` comment, unless your solution already puts IDs in its scenario titles, in which
+case that format is followed. This needs the Claude Code CLI provider and the Azure CLI (`az`, with
+its `azure-devops` extension, signed in via `az login`); set a default organization and project under
+*Settings → Azure DevOps* if you refer to PBIs by number only. It is **read-only** — nothing is created
+or changed in Azure DevOps — and no Azure DevOps credential is stored by this app. If the lookup fails
+for any reason, the Log says why and generation continues from your objective as usual.
+
 **Step reuse check** — if SpecForge (the dotnet tool that converts test cases to Gherkin and matches
 steps against existing bindings) is installed on `PATH`, or you point *Settings → Step Reuse Check* at
 it, each generation is followed by a check of which new steps reuse bindings that already exist, e.g.

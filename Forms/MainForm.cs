@@ -914,7 +914,9 @@ public partial class MainForm : Form
                 TargetFeaturePath = SelectedFeature?.Path,
                 TargetPageObjectPath = SelectedPageObject?.Path,
                 TargetStepDefinitionsPath = SelectedStepDefinitionFile?.Path,
-                ScreenshotsPath = _settings.ScreenshotsPath
+                ScreenshotsPath = _settings.ScreenshotsPath,
+                AdoOrganization = _settings.AdoOrganization,
+                AdoProject = _settings.AdoProject
             };
             var result = await _agent.Run(request, _cts.Token);
 
@@ -960,7 +962,15 @@ public partial class MainForm : Form
                 var reuseNote = result.ReuseReport is { Total: > 0 } r
                     ? $" {r.Reused} of {r.Total} steps reuse existing bindings."
                     : "";
-                SetStatus($"Test generated.{reuseNote} Review it, then press Insert to write it into the solution.", Theme.Accent);
+
+                // Say so when the objective named a PBI: either it was used (with how many test
+                // cases) or it could not be read and the run fell back to the plain objective.
+                var pbiNote = result.Pbi is { } pbi
+                    ? $" Built from PBI {pbi.Id} ({pbi.TestCases.Count} linked test case(s))."
+                    : PbiReferenceFinder.Find(objective) is { } missed && _recordedActions.Count == 0
+                        ? $" PBI {missed.Id} could not be read - see Log."
+                        : "";
+                SetStatus($"Test generated.{pbiNote}{reuseNote} Review it, then press Insert to write it into the solution.", Theme.Accent);
             }
             else
             {

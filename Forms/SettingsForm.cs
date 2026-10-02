@@ -38,6 +38,8 @@ public class SettingsForm : Form
     private FieldBox _screenshotsField = null!;
     private PillButton _screenshotsBrowseButton = null!;
     private Label _screenshotsStatusLabel = null!;
+    private FieldBox _adoOrgField = null!;
+    private FieldBox _adoProjectField = null!;
     private FieldBox _specForgeField = null!;
     private PillButton _specForgeBrowseButton = null!;
     private Label _specForgeStatusLabel = null!;
@@ -78,7 +80,7 @@ public class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 23,
+            RowCount = 27,
             BackColor = Theme.SurfaceAlt
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -106,6 +108,10 @@ public class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 20 specforge caption
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 21 specforge picker
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // 22 specforge status
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));  // 23 azure devops title
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 24 azure devops caption
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 25 organization + project
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));  // 26 azure devops note
 
         layout.Controls.Add(SectionTitle("Claude Account"), 0, 0);
         layout.Controls.Add(Caption("Connect using"), 0, 1);
@@ -288,6 +294,41 @@ public class SettingsForm : Form
             Padding = new Padding(2, 6, 0, 0)
         };
         layout.Controls.Add(_specForgeStatusLabel, 0, 22);
+
+        layout.Controls.Add(SectionTitle("Azure DevOps"), 0, 23);
+        layout.Controls.Add(Caption("Organization and project for \"check PBI 1234\" objectives (optional)"), 0, 24);
+
+        _adoOrgField = new FieldBox { Dock = DockStyle.Fill, PlaceholderText = "organization, e.g. acme", Margin = Padding.Empty };
+        _adoProjectField = new FieldBox { Dock = DockStyle.Fill, PlaceholderText = "project", Margin = Padding.Empty };
+
+        var adoRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Theme.SurfaceAlt,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+        adoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        adoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _adoOrgField.Margin = new Padding(0, 0, 10, 0);
+        adoRow.Controls.Add(_adoOrgField, 0, 0);
+        adoRow.Controls.Add(_adoProjectField, 1, 0);
+        layout.Controls.Add(adoRow, 0, 25);
+
+        layout.Controls.Add(new Label
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Font = Theme.Ui(8.5f),
+            ForeColor = Theme.TextDisabled,
+            BackColor = Theme.SurfaceAlt,
+            TextAlign = ContentAlignment.TopLeft,
+            Padding = new Padding(2, 6, 0, 0),
+            Text = "Read-only. Needs the Claude Code CLI provider plus the az CLI (azure-devops extension) signed in " +
+                   "with az login; no Azure DevOps credential is stored here. A full work-item link in the " +
+                   "objective carries its own organization and project."
+        }, 0, 26);
 
         _saveButton = new PillButton { Text = "Save", Style = PillStyle.Primary, Width = 120, Dock = DockStyle.Right };
         _saveButton.Click += (s, e) => Save();
@@ -644,6 +685,8 @@ public class SettingsForm : Form
         _screenshotsField.Text = _draft.ScreenshotsPath ?? string.Empty;
         _specForgeField.Text = _draft.SpecForgePath ?? string.Empty;
         ScanSpecForge();
+        _adoOrgField.Text = _draft.AdoOrganization ?? string.Empty;
+        _adoProjectField.Text = _draft.AdoProject ?? string.Empty;
         _maxTokensField.Text = _draft.MaxTokens.ToString();
 
         _effortBox.SelectedItem = EffortLevels.Contains(_draft.Effort) ? _draft.Effort : "high";
@@ -765,6 +808,12 @@ public class SettingsForm : Form
 
         var specForgePath = _specForgeField.Text.Trim().Trim('"');
         _draft.SpecForgePath = string.IsNullOrEmpty(specForgePath) ? null : specForgePath;
+
+        var adoOrganization = _adoOrgField.Text.Trim();
+        _draft.AdoOrganization = string.IsNullOrEmpty(adoOrganization) ? null : adoOrganization;
+
+        var adoProject = _adoProjectField.Text.Trim();
+        _draft.AdoProject = string.IsNullOrEmpty(adoProject) ? null : adoProject;
 
         try
         {
