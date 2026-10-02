@@ -29,7 +29,9 @@ Install the CLI once:
 npm install -g @anthropic-ai/claude-code
 ```
 
-Then press **Test Connection**. Each generation consumes your normal Claude Code usage.
+Then press **Test Connection**. Each generation consumes your normal Claude Code usage. If your
+login has expired, the app opens a terminal running `claude` so you can sign in; the app itself never
+sees or stores your Claude credentials.
 
 **Anthropic API key** — paste a key from the Anthropic Console. It is encrypted with Windows DPAPI
 for your user account and stored in `%APPDATA%\PlaywrightAgentAI\settings.json`; it never touches the
@@ -55,8 +57,11 @@ provider you chose.
 ### From a description
 
 1. Enter the **URL**.
-2. Pick a **Feature file** — an existing one to append a scenario to, or *New feature file*.
+2. Choose where the output goes with the three pickers: **Feature file**, **Page object** and
+   **Step definitions**. Pick an existing file to extend it, or leave *New ...* to create one.
 3. Describe the **Test Objective**, e.g. *"Verify the Skills section lists at least one skill."*
+   If you name the section in quotes — *Check the "Connected Devices" section* — that name is matched
+   to the page's headings directly, which is more reliable than relying on the surrounding words.
 4. **Generate Test**.
 
 ### From your own clicks
@@ -71,12 +76,17 @@ password fields are recorded as `<redacted>`.
 
 ### What happens next
 
-Generated files are written into your solution automatically:
+The result appears in tabs for you to review. Nothing is written to your solution until you press
+**Insert**, and **Edit** opens the active tab's code in its own window if you want to change it first.
 
 | Suite type | Files produced |
 |---|---|
-| Reqnroll / Gherkin | `Features/<Name>.feature` and `StepDefinitions/<Name>Steps.cs` |
+| Reqnroll / Gherkin | `Features/<Name>.feature`, a page object (`Pages/<Name>Page.cs`) and `StepDefinitions/<Name>Steps.cs` |
 | NUnit | one `[TestFixture]` class in your test folder |
+
+For a Gherkin suite the three files have separate jobs: the **page object** holds every locator and
+the methods that act on or read the page, the **step definitions** hold only the assertions, and the
+**feature** holds the scenario. A `Pages` folder is created if your solution doesn't have one yet.
 
 **Open Folder** reveals where they landed. Then build and run them with your normal tooling:
 
@@ -94,10 +104,28 @@ Your test solution may not be under version control, so writes are guarded:
   made, the write is refused.
 - Feature files are rewritten in full — that is how a new scenario is appended, and existing
   scenarios are preserved.
-- **Step-definition files are never overwritten.** Generation emits only genuinely new bindings, so
-  overwriting would delete the ones already there. New bindings go into a new file beside them.
+- **Step-definition files are never overwritten by accident.** Generation emits only genuinely new
+  bindings, so a same-named collision gets a numbered new file beside the old one. The one exception
+  is a file you explicitly pick in the *Step definitions* list: it is reproduced in full with the new
+  bindings added, after a `.bak` backup.
 - Existing step wordings are given to Claude and reuse is required wherever one fits, which keeps a
   BDD suite from filling up with near-duplicate steps.
+
+---
+
+## Optional extras
+
+**Debug screenshots** — set a folder under *Settings → Debug Screenshots*. While recording, every
+click is captured; for a typed objective, the section that was matched is captured, so you can see
+whether the right part of the page was tested. The **Screenshots** button opens them in order. They
+live only in that folder, are never written into your solution, and are deleted when you start a new
+recording, press **Clear**, or **Insert**.
+
+**Step reuse check** — if SpecForge (the dotnet tool that converts test cases to Gherkin and matches
+steps against existing bindings) is installed on `PATH`, or you point *Settings → Step Reuse Check* at
+it, each generation is followed by a check of which new steps reuse bindings that already exist, e.g.
+*"3 of 5 steps reuse existing bindings"*, with the new ones listed in the Log. It is purely advisory:
+without SpecForge, or if it fails, generation is unaffected.
 
 ---
 

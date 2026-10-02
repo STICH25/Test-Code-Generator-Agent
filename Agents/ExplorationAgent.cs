@@ -14,11 +14,16 @@ public class ExplorationAgent
     private readonly TestCodeBuilder _builder = new();
     private readonly ITestCodeGenerator? _aiGenerator;
     private readonly SolutionProfile? _profile;
+    private readonly SpecForgeCommand? _specForge;
 
-    public ExplorationAgent(ITestCodeGenerator? aiGenerator = null, SolutionProfile? profile = null)
+    public ExplorationAgent(
+        ITestCodeGenerator? aiGenerator = null,
+        SolutionProfile? profile = null,
+        SpecForgeCommand? specForge = null)
     {
         _aiGenerator = aiGenerator;
         _profile = profile;
+        _specForge = specForge;
     }
 
     public async Task<AgentResult> Run(ExplorationRequest request, CancellationToken cancellationToken = default)
@@ -132,6 +137,7 @@ public class ExplorationAgent
                 ApplyTarget(result, ArtifactKind.StepDefinitions, targetStepDefinitions?.Path);
 
                 DescribeArtifacts(result);
+                await RunReuseCheck(result, cancellationToken);
                 return result;
             }
             catch (OperationCanceledException)
@@ -160,6 +166,37 @@ public class ExplorationAgent
         {
             Console.Error.WriteLine($"Error: Agent execution failed: {ex.Message}");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Asks SpecForge which of the new steps reuse existing bindings. Strictly advisory: it
+    /// runs after the artifacts are already in hand, and any failure here is reported as a
+    /// log line and swallowed - it must never turn a good generation into the static-template
+    /// fallback, which is what an exception reaching the surrounding AI-call handler would do.
+    /// </summary>
+    private async Task RunReuseCheck(AgentResult result, CancellationToken cancellationToken)
+    {
+        if (_profile is not { CanWriteGherkin: true } || !result.Artifacts.Any(a => a.Kind == ArtifactKind.Feature))
+            return;
+
+        if (_specForge == null)
+        {
+            Console.WriteLine("Step reuse check skipped (SpecForge not found - optional, see Settings).");
+            return;
+        }
+
+        try
+        {
+            result.ReuseReport = await SpecForgeReuseCheck.Run(_specForge, _profile, result.Artifacts, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Step reuse check failed ({ex.Message}); generation is unaffected.");
         }
     }
 
