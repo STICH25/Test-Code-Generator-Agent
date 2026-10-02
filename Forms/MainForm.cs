@@ -1348,7 +1348,7 @@ public partial class MainForm : Form
     /// </summary>
     private void InsertToSolution()
     {
-        if (_solutionProfile is not { IsUsable: true })
+        if (_solutionProfile is not { CanInsert: true })
         {
             SetStatus("Link a solution in Settings first.", Theme.Warning);
             return;
@@ -1422,7 +1422,7 @@ public partial class MainForm : Form
 
     private void UpdateInsertButtonState()
     {
-        var solutionReady = _solutionProfile is { IsUsable: true };
+        var solutionReady = _solutionProfile is { CanInsert: true };
 
         _openFolderButton.Enabled = solutionReady;
         _insertButton.Enabled = solutionReady && _lastArtifacts.Count > 0;

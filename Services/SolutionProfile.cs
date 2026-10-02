@@ -80,6 +80,17 @@ public class SolutionProfile
     /// <summary>True when there is enough here to shape generation.</summary>
     public bool IsUsable => !string.IsNullOrEmpty(TestDirectory) && Directory.Exists(TestDirectory);
 
+    /// <summary>
+    /// True when there is a linked solution ready to receive generated files, by either
+    /// output shape. IsUsable alone only covers the plain-fixture shape (it needs an example
+    /// [TestFixture] class to have been found) - a solution that is purely Reqnroll, with no
+    /// hand-written test fixture at all (common, since Reqnroll generates the runner itself
+    /// from .feature files), has CanWriteGherkin true and IsUsable false. Gating Insert on
+    /// IsUsable alone left it permanently disabled for exactly that kind of solution, even
+    /// though the Feature/Page Object/Step pickers were correctly showing "New ...".
+    /// </summary>
+    public bool CanInsert => CanWriteGherkin || IsUsable;
+
     public string Describe()
     {
         var name = Path.GetFileName(RootPath);
