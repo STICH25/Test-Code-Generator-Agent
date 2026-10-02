@@ -94,6 +94,16 @@ in `PromptBuilder.Build`:
 For Gherkin, existing step bindings are listed verbatim in the prompt and reuse is the first rule —
 a BDD suite decays fast when every generated scenario invents a near-duplicate step.
 
+**`IsUsable` and `CanWriteGherkin` are independent, not a fallback chain** — a solution can be
+`CanWriteGherkin: true` and `IsUsable: false` at the same time. `IsUsable` only means "a plain
+`[TestFixture]` example test was found"; a solution that is purely Reqnroll, with no hand-written
+test fixture at all (normal, since Reqnroll generates its own runner from `.feature` files), will
+never set it. Anything that gates on "is there a linked solution ready to receive output" — Insert,
+the Folder button — must check `SolutionProfile.CanInsert` (`CanWriteGherkin || IsUsable`), not
+`IsUsable` alone. Gating on `IsUsable` alone was a real bug: the Feature/Page Object/Steps pickers
+correctly showed "New feature file" etc. (gated on `CanWriteGherkin`), while Insert stayed
+permanently disabled for exactly that kind of solution.
+
 ### Writing into another repo
 
 `SolutionWriter` backs up any file it is about to overwrite to a timestamped `.bak`, and refuses to
