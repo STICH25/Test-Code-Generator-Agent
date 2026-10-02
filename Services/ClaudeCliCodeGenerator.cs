@@ -17,7 +17,8 @@ public sealed record CliRunOptions(
     int MaxTurns = 1,
     IReadOnlyList<string>? AllowedTools = null,
     IReadOnlyList<string>? DisallowedTools = null,
-    string PromptLogName = "last-prompt.txt");
+    string PromptLogName = "last-prompt.txt",
+    string? WorkingDirectory = null);
 
 public class ClaudeCliCodeGenerator : ITestCodeGenerator
 {
@@ -99,16 +100,23 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
 
     private async Task<string> Run(string instruction, string stdinPayload, CliRunOptions options, CancellationToken cancellationToken)
     {
-        // Run from a scratch directory so the CLI does not pick up CLAUDE.md files or
-        // other project context from whatever folder the app happens to be in.
-        var workingDirectory = Path.Combine(Path.GetTempPath(), "PlaywrightAgentAI.cli");
-        Directory.CreateDirectory(workingDirectory);
+        // Generation runs from a scratch directory so the CLI does not pick up CLAUDE.md files
+        // or other project context from whatever folder the app happens to be in. A caller
+        // that wants the opposite (the Azure DevOps lookup, which should behave like the user
+        // running their skills inside their own solution) names a directory explicitly.
+        var scratchDirectory = Path.Combine(Path.GetTempPath(), "PlaywrightAgentAI.cli");
+        Directory.CreateDirectory(scratchDirectory);
+
+        var workingDirectory = options.WorkingDirectory is { } requested && Directory.Exists(requested)
+            ? requested
+            : scratchDirectory;
 
         // Keep the exact prompt on disk for troubleshooting "why did it generate that?".
-        // Local file, never transmitted.
+        // Local file, never transmitted. Always in the scratch directory, never in the
+        // working directory: that may be the user's own solution, and nothing is written there.
         try
         {
-            File.WriteAllText(Path.Combine(workingDirectory, options.PromptLogName), stdinPayload);
+            File.WriteAllText(Path.Combine(scratchDirectory, options.PromptLogName), stdinPayload);
         }
         catch
         {
