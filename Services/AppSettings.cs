@@ -46,6 +46,13 @@ public class AppSettings
     /// </summary>
     public string? ScreenshotsPath { get; set; }
 
+    /// <summary>
+    /// Optional explicit location of SpecForge (specforge.exe, or SpecForge.Cli.dll from a
+    /// source build). Blank means "look on PATH". SpecForge is never required - without it the
+    /// post-generation step-reuse check is simply skipped.
+    /// </summary>
+    public string? SpecForgePath { get; set; }
+
     /// <summary>DPAPI-encrypted API key. This is the only form ever written to disk.</summary>
     public string? ProtectedApiKey { get; set; }
 
@@ -83,6 +90,7 @@ public class AppSettings
         CliModel = CliModel,
         TestSolutionPath = TestSolutionPath,
         ScreenshotsPath = ScreenshotsPath,
+        SpecForgePath = SpecForgePath,
         ProtectedApiKey = ProtectedApiKey,
         Model = Model,
         Effort = Effort,

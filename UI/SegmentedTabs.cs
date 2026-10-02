@@ -104,10 +104,20 @@ public class SegmentedTabs : Control
         _hitBoxes.Clear();
         var x = 0;
 
+        // Chips get generous padding when there is room, and give it back when there is not.
+        // With a fixed 28px, the last tab (Log) fell off the end of the strip in the narrow
+        // output card - invisible, unclickable, and impossible to see highlighted when the app
+        // switched to it.
+        const int gap = 6;
+        const int maxPad = 28;
+        const int minPad = 10;
+        var textWidths = _items.Select(item => TextRenderer.MeasureText(g, item, Font).Width).ToList();
+        var spare = Width - textWidths.Sum() - gap * Math.Max(0, _items.Count - 1);
+        var pad = _items.Count == 0 ? maxPad : Math.Clamp(spare / _items.Count, minPad, maxPad);
+
         for (var i = 0; i < _items.Count; i++)
         {
-            var size = TextRenderer.MeasureText(g, _items[i], Font);
-            var chip = new Rectangle(x, 0, size.Width + 28, Height);
+            var chip = new Rectangle(x, 0, textWidths[i] + pad, Height);
             _hitBoxes.Add(chip);
 
             var selected = i == _selectedIndex;
@@ -126,7 +136,7 @@ public class SegmentedTabs : Control
                 g, _items[i], Font, chip, color,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
-            x = chip.Right + 6;
+            x = chip.Right + gap;
         }
     }
 }

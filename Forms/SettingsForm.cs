@@ -31,12 +31,16 @@ public class SettingsForm : Form
     private Control _tuningRow = null!;
     private Control _tuningCaption = null!;
     private TableLayoutPanel _layout = null!;
+    private Panel _scrollHost = null!;
     private FieldBox _solutionField = null!;
     private PillButton _browseButton = null!;
     private Label _solutionStatusLabel = null!;
     private FieldBox _screenshotsField = null!;
     private PillButton _screenshotsBrowseButton = null!;
     private Label _screenshotsStatusLabel = null!;
+    private FieldBox _specForgeField = null!;
+    private PillButton _specForgeBrowseButton = null!;
+    private Label _specForgeStatusLabel = null!;
 
     private CancellationTokenSource? _testCts;
     private bool _modelsLoaded;
@@ -61,8 +65,8 @@ public class SettingsForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(640, 720);
-        MinimumSize = new Size(580, 640);
+        ClientSize = new Size(640, 920);
+        MinimumSize = new Size(580, 520);
         BackColor = Theme.Page;
         ForeColor = Theme.TextPrimary;
         Font = Theme.Ui(9f);
@@ -74,7 +78,7 @@ public class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 20,
+            RowCount = 23,
             BackColor = Theme.SurfaceAlt
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -98,7 +102,10 @@ public class SettingsForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 16 screenshots caption
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 17 screenshots picker
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // 18 screenshots status
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));  // 19 buttons
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));  // 19 specforge title
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));  // 20 specforge caption
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));  // 21 specforge picker
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // 22 specforge status
 
         layout.Controls.Add(SectionTitle("Claude Account"), 0, 0);
         layout.Controls.Add(Caption("Connect using"), 0, 1);
@@ -259,24 +266,78 @@ public class SettingsForm : Form
         };
         layout.Controls.Add(_screenshotsStatusLabel, 0, 18);
 
+        layout.Controls.Add(SectionTitle("Step Reuse Check"), 0, 19);
+        layout.Controls.Add(Caption("SpecForge location (optional - blank looks on PATH)"), 0, 20);
+
+        _specForgeField = new FieldBox { Dock = DockStyle.Fill, PlaceholderText = @"specforge.exe or SpecForge.Cli.dll" };
+        _specForgeField.Inner.TextChanged += (s, e) => ScanSpecForge();
+
+        _specForgeBrowseButton = new PillButton { Text = "Browse", Style = PillStyle.Outline, Width = 92, Dock = DockStyle.Fill };
+        _specForgeBrowseButton.Click += (s, e) => BrowseForSpecForge();
+
+        layout.Controls.Add(SplitRow(_specForgeField, _specForgeBrowseButton, 92), 0, 21);
+
+        _specForgeStatusLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            Font = Theme.Ui(8.5f),
+            ForeColor = Theme.TextDisabled,
+            BackColor = Theme.SurfaceAlt,
+            TextAlign = ContentAlignment.TopLeft,
+            Padding = new Padding(2, 6, 0, 0)
+        };
+        layout.Controls.Add(_specForgeStatusLabel, 0, 22);
+
         _saveButton = new PillButton { Text = "Save", Style = PillStyle.Primary, Width = 120, Dock = DockStyle.Right };
         _saveButton.Click += (s, e) => Save();
 
         _cancelButton = new PillButton { Text = "Cancel", Style = PillStyle.Outline, Width = 110, Dock = DockStyle.Right };
         _cancelButton.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
-        var buttonRow = new Panel { Dock = DockStyle.Fill, BackColor = Theme.SurfaceAlt, Padding = new Padding(0, 10, 0, 0) };
+        // Save/Cancel live outside the table, pinned to the bottom of the card, so they stay
+        // reachable when the settings above them outgrow the window and scroll.
+        var buttonRow = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = Theme.SurfaceAlt, Padding = new Padding(0, 10, 0, 0) };
         // Docked controls stack against their edge in reverse add order.
         buttonRow.Controls.Add(_cancelButton);
         buttonRow.Controls.Add(_saveButton);
-        layout.Controls.Add(buttonRow, 0, 19);
 
         _layout = layout;
 
-        card.Controls.Add(layout);
+        // The sections stack taller than a sensible dialog once the API-key fields are shown
+        // (each section added since the original two pushed it further), and squeezing rows
+        // made them overlap. Scroll instead: the table keeps its natural height inside this
+        // host, which grows a scrollbar only when the window is shorter than that.
+        layout.Dock = DockStyle.Fill;
+        _scrollHost = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Theme.SurfaceAlt };
+        _scrollHost.Controls.Add(layout);
+        NativeDark.UseDarkScrollBars(_scrollHost);
+        UpdateScrollExtent();
+
+        card.Controls.Add(_scrollHost);
+        card.Controls.Add(buttonRow);
         Controls.Add(card);
 
         CancelButton = _cancelButton;
+    }
+
+    /// <summary>
+    /// Sizes the scrolling area to the table's natural height: every fixed row, plus room for
+    /// the solution notes (its one flexible row, which needs several lines to read). Called
+    /// again whenever the provider switch collapses or restores rows.
+    /// </summary>
+    private void UpdateScrollExtent()
+    {
+        const int solutionNotesRow = 14;
+        const int solutionNotesMinHeight = 130;
+
+        var height = 0;
+        for (var i = 0; i < _layout.RowStyles.Count; i++)
+        {
+            height += i == solutionNotesRow ? solutionNotesMinHeight : (int)_layout.RowStyles[i].Height;
+        }
+
+        _scrollHost.AutoScrollMinSize = new Size(0, height);
     }
 
     private static TableLayoutPanel SplitRow(Control first, Control second, int fixedWidth, bool swapWeights = false)
@@ -363,6 +424,7 @@ public class SettingsForm : Form
         _layout.RowStyles[4].Height = usingApi ? 46 : 0;   // api key row
         _layout.RowStyles[8].Height = usingApi ? 26 : 0;   // tuning caption
         _layout.RowStyles[9].Height = usingApi ? 40 : 0;   // effort + tokens
+        UpdateScrollExtent();
 
         _storagePathLabel.Text = usingApi
             ? $"The key is encrypted with Windows DPAPI for your user account and stored at{Environment.NewLine}{SettingsStore.FilePath}"
@@ -432,6 +494,50 @@ public class SettingsForm : Form
 
         if (dialog.ShowDialog(this) == DialogResult.OK)
             _screenshotsField.Text = dialog.SelectedPath;
+    }
+
+    private void BrowseForSpecForge()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Select specforge.exe (or SpecForge.Cli.dll from a source build)",
+            Filter = "SpecForge|specforge.exe;SpecForge.Cli.dll|All files|*.*",
+            CheckFileExists = true
+        };
+
+        if (File.Exists(_specForgeField.Text))
+            dialog.FileName = _specForgeField.Text;
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            _specForgeField.Text = dialog.FileName;
+    }
+
+    /// <summary>
+    /// Reports whether SpecForge is reachable. Purely informational and never blocks Save -
+    /// SpecForge is optional, and without it the step reuse check is just skipped.
+    /// </summary>
+    private void ScanSpecForge()
+    {
+        var path = _specForgeField.Text.Trim().Trim('"');
+        _draft.SpecForgePath = string.IsNullOrEmpty(path) ? null : path;
+
+        var found = SpecForgeLocator.Locate(_draft.SpecForgePath);
+
+        if (found != null)
+        {
+            _specForgeStatusLabel.ForeColor = Theme.Accent;
+            _specForgeStatusLabel.Text = $"Found: {found.Display}. New steps are checked for reuse after each generation.";
+        }
+        else if (string.IsNullOrEmpty(path))
+        {
+            _specForgeStatusLabel.ForeColor = Theme.TextDisabled;
+            _specForgeStatusLabel.Text = "Not found on PATH - the step reuse check is skipped. Generation works without it.";
+        }
+        else
+        {
+            _specForgeStatusLabel.ForeColor = Theme.Warning;
+            _specForgeStatusLabel.Text = "That file was not found, and SpecForge is not on PATH - the step reuse check is skipped.";
+        }
     }
 
     /// <summary>
@@ -536,6 +642,8 @@ public class SettingsForm : Form
         _apiKeyField.Text = _draft.ApiKey ?? string.Empty;
         _solutionField.Text = _draft.TestSolutionPath ?? string.Empty;
         _screenshotsField.Text = _draft.ScreenshotsPath ?? string.Empty;
+        _specForgeField.Text = _draft.SpecForgePath ?? string.Empty;
+        ScanSpecForge();
         _maxTokensField.Text = _draft.MaxTokens.ToString();
 
         _effortBox.SelectedItem = EffortLevels.Contains(_draft.Effort) ? _draft.Effort : "high";
@@ -654,6 +762,9 @@ public class SettingsForm : Form
 
         var screenshotsPath = _screenshotsField.Text.Trim();
         _draft.ScreenshotsPath = string.IsNullOrEmpty(screenshotsPath) ? null : screenshotsPath;
+
+        var specForgePath = _specForgeField.Text.Trim().Trim('"');
+        _draft.SpecForgePath = string.IsNullOrEmpty(specForgePath) ? null : specForgePath;
 
         try
         {

@@ -30,4 +30,11 @@ public class AgentResult
     /// from a recording (which captures its own, one per action, separately).
     /// </summary>
     public List<ScreenshotEntry> Screenshots { get; set; } = [];
+
+    /// <summary>
+    /// SpecForge's verdict on how many generated steps reuse existing bindings. Null when
+    /// SpecForge is unavailable, there was nothing to check, or the check itself failed -
+    /// advisory, never required.
+    /// </summary>
+    public ReuseReport? ReuseReport { get; set; }
 }

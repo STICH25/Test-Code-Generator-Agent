@@ -105,11 +105,18 @@ public partial class MainForm : Form
             }
         }
 
-        _agent = new ExplorationAgent(generator, _solutionProfile);
+        _agent = NewAgent(generator);
         ReflectConnectionState();
         PopulateTargetPickers();
         UpdateInsertButtonState();
     }
+
+    /// <summary>
+    /// SpecForge is looked up afresh each time the agent is rebuilt, so installing it (or
+    /// pointing Settings at it) takes effect without a restart. It is optional throughout.
+    /// </summary>
+    private ExplorationAgent NewAgent(ITestCodeGenerator? generator) =>
+        new(generator, _solutionProfile, SpecForgeLocator.Locate(_settings.SpecForgePath));
 
     private ITestCodeGenerator? BuildGenerator()
     {
@@ -939,10 +946,21 @@ public partial class MainForm : Form
             // stub was returned. Report what actually happened. Nothing is written to disk
             // here any more - Insert is now the explicit, user-triggered step, so there is
             // a chance to review or edit first.
+            if (result.ReuseReport is { } reuse)
+            {
+                Console.WriteLine($"Step reuse (SpecForge): {reuse.Summary}");
+                foreach (var step in reuse.NewSteps)
+                    Console.WriteLine($"  new step: {step}");
+            }
+
             if (result.UsedAi)
             {
                 _outputTabs.SelectedIndex = 0;
-                SetStatus("Test generated. Review it, then press Insert to write it into the solution.", Theme.Accent);
+
+                var reuseNote = result.ReuseReport is { Total: > 0 } r
+                    ? $" {r.Reused} of {r.Total} steps reuse existing bindings."
+                    : "";
+                SetStatus($"Test generated.{reuseNote} Review it, then press Insert to write it into the solution.", Theme.Accent);
             }
             else
             {
@@ -1389,7 +1407,7 @@ public partial class MainForm : Form
             var selectedStepFile = SelectedStepDefinitionFile?.Path;
 
             _solutionProfile = SolutionScanner.Scan(_settings.TestSolutionPath);
-            _agent = new ExplorationAgent(BuildGenerator(), _solutionProfile);
+            _agent = NewAgent(BuildGenerator());
 
             PopulateTargetPickers();
             RestoreSelection(_featureBox, selectedFeature, (FeatureChoice c) => c.File?.Path);
