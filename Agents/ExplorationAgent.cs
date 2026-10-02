@@ -110,9 +110,11 @@ public class ExplorationAgent
                 if (targetStepDefinitions != null)
                     Console.WriteLine($"Appending bindings to {targetStepDefinitions.FileName}.");
 
+                result.Pbi = await LookUpPbi(request, cancellationToken);
+
                 var prompt = promptBuilder.Build(
                     userRequest, dom, _profile, request.RecordedActions,
-                    targetFeature, targetPageObject, targetStepDefinitions);
+                    targetFeature, targetPageObject, targetStepDefinitions, result.Pbi);
                 var code = await _aiGenerator.Generate(prompt, cancellationToken);
 
                 if (string.IsNullOrWhiteSpace(code))
@@ -166,6 +168,63 @@ public class ExplorationAgent
         {
             Console.Error.WriteLine($"Error: Agent execution failed: {ex.Message}");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// When the objective names a PBI, reads it (and its linked Test Cases) from Azure DevOps so
+    /// the scenarios can come from the real test steps. Optional context: every way this can
+    /// not happen - no PBI named, no CLI provider, no az, not logged in, a timeout - is a log
+    /// line and a null, and generation proceeds exactly as it would have without it. Like the
+    /// reuse check it must not throw into the surrounding AI-call handler.
+    /// </summary>
+    private async Task<PbiContext?> LookUpPbi(ExplorationRequest request, CancellationToken cancellationToken)
+    {
+        if (request.RecordedActions.Count > 0)
+            return null;
+
+        var reference = PbiReferenceFinder.Find(request.TestObjective);
+        if (reference == null)
+            return null;
+
+        if (_aiGenerator is not ClaudeCliCodeGenerator cli)
+        {
+            Console.WriteLine($"PBI {reference.Id} noticed in the objective, but reading it from Azure DevOps needs the Claude Code CLI provider; continuing without it.");
+            return null;
+        }
+
+        var organization = reference.Organization != null
+            ? PbiReferenceFinder.NormalizeOrganization(reference.Organization)
+            : PbiReferenceFinder.NormalizeOrganization(request.AdoOrganization);
+        var project = reference.Project ?? (string.IsNullOrWhiteSpace(request.AdoProject) ? null : request.AdoProject.Trim());
+
+        Console.WriteLine($"Reading PBI {reference.Id} from Azure DevOps (read-only, via the az CLI and your skills)...");
+
+        try
+        {
+            var lookup = await AdoPbiLookup.Fetch(cli, reference, organization, project, cancellationToken);
+
+            foreach (var problem in lookup.Problems)
+                Console.Error.WriteLine($"Azure DevOps: {problem}");
+
+            if (lookup.Context == null)
+                return null;
+
+            Console.WriteLine($"Azure DevOps: {lookup.Context.Summary}.");
+
+            if (lookup.Context.TestCases.Count == 0)
+                Console.WriteLine("Azure DevOps: no Test Cases are linked, so scenarios will come from the acceptance criteria. Creating Test Cases in ADO first gives better coverage.");
+
+            return lookup.Context;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Azure DevOps lookup failed ({ex.Message}); generating without it.");
+            return null;
         }
     }
 

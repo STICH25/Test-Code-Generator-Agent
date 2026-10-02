@@ -30,4 +30,9 @@ public class ExplorationRequest
     /// its own screenshots separately, one per action, as it happens.
     /// </summary>
     public string? ScreenshotsPath { get; set; }
+
+    /// <summary>Default Azure DevOps organization/project for a PBI named by number only. Null when unset.</summary>
+    public string? AdoOrganization { get; set; }
+
+    public string? AdoProject { get; set; }
 }

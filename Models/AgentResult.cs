@@ -37,4 +37,11 @@ public class AgentResult
     /// advisory, never required.
     /// </summary>
     public ReuseReport? ReuseReport { get; set; }
+
+    /// <summary>
+    /// The PBI (and linked Test Cases) read from Azure DevOps and fed into the prompt. Null when
+    /// the objective named no PBI, or the lookup could not be completed - optional context,
+    /// never required.
+    /// </summary>
+    public PbiContext? Pbi { get; set; }
 }

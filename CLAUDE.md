@@ -121,13 +121,51 @@ permanently disabled for exactly that kind of solution.
 
 ### Skills, and the optional SpecForge reuse check
 
-**The app does not invoke any Claude skill, and does not depend on one.** Generation is a single
+**Generation itself does not invoke any Claude skill, and nothing depends on one.** It is a single
 `claude --print --max-turns 1` call, which would never load a skill anyway. The skills in
 `~/.claude/skills` (`new-automation-project`, `reqnroll-step-reuse`, `specforge-reqnroll`, ...) are
 for Claude Code sessions working *on* a test solution. Where one informed the app, its idea was
 copied into code (the page-object/steps split into `PromptBuilder`; the step inventory into
 `SolutionScanner`), so a later change to a skill does not change the app's behaviour — re-sync by
-hand if you want it to.
+hand if you want it to. The one exception is the PBI lookup below, which deliberately defers to two
+skills at run time.
+
+### Reading a PBI from Azure DevOps
+
+When the objective names a PBI — a work-item link, or a number after "PBI" / "work item" / "user
+story" / "ADO" (`PbiReferenceFinder`; a bare number never counts) — `ExplorationAgent.LookUpPbi`
+reads it and its linked Test Cases and feeds them into the prompt, so scenarios come from the real
+test steps instead of the PBI's thin acceptance criteria.
+
+**Claude does the reading, not the app.** `AdoPbiLookup` runs a second, multi-turn `claude` call
+(`ClaudeCliCodeGenerator.RunRestricted`) and tells it to follow the `gherkin-to-ado-testcases` skill
+(how to reach ADO through `az`) and `specforge-reqnroll` step 1 (PBI → `TestedBy-Forward` relations →
+each Test Case's `Microsoft.VSTS.TCM.Steps`), then reply with JSON. The skills are consulted live, so
+changing one changes the behaviour with no code change; if they are absent the payload spells out the
+same `az boards work-item show` recipe. It runs under the user's own `az login` — the app never sees
+an ADO credential. Organization/project come from the objective's link, else **Settings → Azure
+DevOps**. It needs the CLI provider, `az`, and the `azure-devops` extension; the MCP route in the
+skills is not supported here.
+
+**It is read-only, enforced by the CLI rather than by prompt wording.** The call's `--allowedTools` is
+`Skill` plus `az boards work-item show / account show / extension show / version / devops project
+show`, and `az rest` and work-item create/update/delete/relation are in `--disallowedTools`. In
+`--print` mode a tool outside the allow-list is denied, not prompted for — verified by asking Claude
+to run a `create` and a POST `az rest` against a stand-in `az`: both came back DENIED and the stand-in
+saw only the `show`. This matters because both skills describe *creating* missing Test Cases in ADO.
+That is out of scope; a PBI with no linked Test Cases falls back to its acceptance criteria and says
+so. **Do not widen the allow-list to anything that writes without the user's explicit say-so.**
+
+It is optional like everything else here: no `az`, not logged in, no access, a 4-minute timeout or
+unparseable JSON all become Log lines plus a status-bar note ("PBI 4242 could not be read - see
+Log"), and generation proceeds without the PBI. The prompt section (`PromptBuilder.AppendPbiContext`)
+sits after the output contract and before the page markup. Test Case IDs go into scenario titles
+only if the solution's existing scenarios already use `_[ADO 123]` or `_TC 123`; otherwise a
+`# ADO Test Case <id>` comment above each scenario — the app does not invent a team's title format.
+The exact lookup message is saved to `%TEMP%\PlaywrightAgentAI.cli\last-pbi-prompt.txt`.
+
+**Testing it without a real ADO:** put a stand-in `az` (a bash script that serves fixture JSON and
+logs every call) first on PATH when launching the app. The log of calls shows exactly what Claude ran.
 
 The one external tool the app *can* use is **SpecForge** (`~/source/repos/SpecForge`, a dotnet tool),
 and only as a second opinion after generation. `SpecForgeLocator` finds `specforge.exe` on PATH or

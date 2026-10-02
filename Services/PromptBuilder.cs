@@ -16,7 +16,7 @@ namespace PlaywrightAgentAI.Services;
 /// against a blank page. It also hardcoded selectors from one specific site while telling
 /// the model not to invent selectors.
 /// </summary>
-public class PromptBuilder
+public partial class PromptBuilder
 {
     private const int MaxSections = 6;
     private const int MaxItemsPerList = 40;
@@ -28,7 +28,8 @@ public class PromptBuilder
         IReadOnlyList<RecordedAction>? recordedActions = null,
         FeatureFile? targetFeature = null,
         PageObjectFile? targetPageObject = null,
-        StepDefinitionFile? targetStepDefinitions = null)
+        StepDefinitionFile? targetStepDefinitions = null,
+        PbiContext? pbi = null)
     {
         var prompt = new StringBuilder();
 
@@ -55,6 +56,8 @@ public class PromptBuilder
             AppendHouseStyle(prompt, profile);
         else
             AppendStandaloneContract(prompt, request.Url);
+
+        AppendPbiContext(prompt, pbi, profile);
 
         AppendPageFacts(prompt, dom);
 
@@ -88,6 +91,111 @@ public class PromptBuilder
         prompt.AppendLine("A value shown as <redacted> was a password field - use a placeholder or config value.");
         prompt.AppendLine();
     }
+
+    /// <summary>
+    /// The PBI and its linked Test Cases, when the objective named one. The Test Cases are the
+    /// specification: they carry the real, detailed steps, where the PBI's own acceptance
+    /// criteria are often thin ("Given I am logged in and I have permissions..."). The page
+    /// structure that follows stays the only source of selectors and on-screen labels.
+    /// </summary>
+    private static void AppendPbiContext(StringBuilder prompt, PbiContext? pbi, SolutionProfile? profile)
+    {
+        if (pbi == null)
+            return;
+
+        var gherkin = profile is { CanWriteGherkin: true };
+        var unit = gherkin ? "scenario" : "test";
+
+        prompt.AppendLine($"=== AZURE DEVOPS: PBI {pbi.Id} - {pbi.Title} ===");
+        prompt.AppendLine("This was read from Azure DevOps for the PBI the objective refers to. It says WHAT to");
+        prompt.AppendLine("test; the page structure further down is the only source for HOW to address it.");
+        prompt.AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(pbi.Description))
+        {
+            prompt.AppendLine("Description:");
+            prompt.AppendLine(pbi.Description);
+            prompt.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(pbi.AcceptanceCriteria))
+        {
+            prompt.AppendLine("Acceptance criteria:");
+            prompt.AppendLine(pbi.AcceptanceCriteria);
+            prompt.AppendLine();
+        }
+
+        if (pbi.TestCases.Count == 0)
+        {
+            prompt.AppendLine("No Test Cases are linked to this PBI, so derive the " + unit + "s from the acceptance criteria");
+            prompt.AppendLine($"above and note that with a comment line: # Source: PBI {pbi.Id} acceptance criteria");
+            prompt.AppendLine();
+            return;
+        }
+
+        prompt.AppendLine($"LINKED TEST CASES ({pbi.TestCases.Count}) - derive the {unit}s from THESE steps, not from the");
+        prompt.AppendLine("acceptance criteria above:");
+        prompt.AppendLine();
+
+        foreach (var testCase in pbi.TestCases)
+        {
+            prompt.AppendLine($"Test Case {testCase.Id} - {testCase.Title}");
+
+            for (var i = 0; i < testCase.Steps.Count; i++)
+            {
+                var step = testCase.Steps[i];
+                prompt.AppendLine($"  {i + 1}. Action: {step.Action}");
+
+                if (!string.IsNullOrWhiteSpace(step.Expected))
+                    prompt.AppendLine($"     Expected: {step.Expected}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("How to use them:");
+        prompt.AppendLine($"- Turn each test case's steps into {unit} steps: preconditions become Given, actions When,");
+        prompt.AppendLine("  expected results Then. Reuse existing step wordings wherever one fits.");
+        prompt.AppendLine("- Test cases covering different angles (a positive and a negative, one variation and another)");
+        prompt.AppendLine($"  stay separate {unit}s. Test cases that are consecutive steps of ONE flow, where each only");
+        prompt.AppendLine($"  makes sense given the state the last left behind, merge into one {unit} covering them all.");
+        prompt.AppendLine("- Never invent a UI label, selector or value that is not in the page structure below. If a");
+        prompt.AppendLine("  step names something the page does not show, keep the step as written and add a comment");
+        prompt.AppendLine("  line saying it could not be matched to the page.");
+        prompt.AppendLine(TraceabilityInstruction(profile));
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// How to carry the Test Case IDs into the output. Follows a convention the solution already
+    /// uses in its scenario titles when there is one; otherwise falls back to a comment line,
+    /// because inventing a title format would be guessing at a team's convention.
+    /// </summary>
+    private static string TraceabilityInstruction(SolutionProfile? profile)
+    {
+        var names = profile?.Features.SelectMany(f => f.Scenarios).Select(s => s.Name).ToList() ?? [];
+
+        if (names.Any(n => AdoBracketSuffix().IsMatch(n)))
+        {
+            return "- Put every test case ID a scenario covers in its title as a suffix, exactly like the existing\n" +
+                   "  scenarios do: Scenario Name_[ADO 123]; for several, underscore-joined: Scenario Name_[ADO 123_456].";
+        }
+
+        if (names.Any(n => TcSuffix().IsMatch(n)))
+        {
+            return "- Put the test case ID in each scenario's title as a suffix, exactly like the existing scenarios\n" +
+                   "  do: Scenario Name_TC 123.";
+        }
+
+        return "- Keep the trail back to Azure DevOps: directly above each scenario, add a comment line\n" +
+               "  '# ADO Test Case <id>' for every test case it covers.";
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"_\[ADO \d+(?:_\d+)*\]\s*$")]
+    private static partial System.Text.RegularExpressions.Regex AdoBracketSuffix();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"_TC \d+(?:_\d+)*\s*$")]
+    private static partial System.Text.RegularExpressions.Regex TcSuffix();
 
     private static void AppendPageFacts(StringBuilder prompt, DomSnapshot dom)
     {

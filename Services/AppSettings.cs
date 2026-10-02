@@ -53,6 +53,17 @@ public class AppSettings
     /// </summary>
     public string? SpecForgePath { get; set; }
 
+    /// <summary>
+    /// Azure DevOps organization ("acme" or the full https://dev.azure.com/acme URL) used when a
+    /// test objective names a PBI by number only. A full work-item link in the objective carries
+    /// its own organization and project and wins over these. Not secrets: no credential is ever
+    /// stored here - the lookup runs under the user's own `az login`.
+    /// </summary>
+    public string? AdoOrganization { get; set; }
+
+    /// <summary>Azure DevOps project to look the PBI up in. See <see cref="AdoOrganization"/>.</summary>
+    public string? AdoProject { get; set; }
+
     /// <summary>DPAPI-encrypted API key. This is the only form ever written to disk.</summary>
     public string? ProtectedApiKey { get; set; }
 
@@ -91,6 +102,8 @@ public class AppSettings
         TestSolutionPath = TestSolutionPath,
         ScreenshotsPath = ScreenshotsPath,
         SpecForgePath = SpecForgePath,
+        AdoOrganization = AdoOrganization,
+        AdoProject = AdoProject,
         ProtectedApiKey = ProtectedApiKey,
         Model = Model,
         Effort = Effort,

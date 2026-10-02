@@ -12,6 +12,13 @@ namespace PlaywrightAgentAI.Services;
 /// in a local subprocess - the prompt goes in on stdin and the answer comes back on
 /// stdout, so no data leaves the machine except through Claude itself.
 /// </summary>
+/// <summary>How a single CLI invocation is constrained. The default is one text-only turn, which is what generation uses.</summary>
+public sealed record CliRunOptions(
+    int MaxTurns = 1,
+    IReadOnlyList<string>? AllowedTools = null,
+    IReadOnlyList<string>? DisallowedTools = null,
+    string PromptLogName = "last-prompt.txt");
+
 public class ClaudeCliCodeGenerator : ITestCodeGenerator
 {
     private const string GenerateInstruction =
@@ -79,7 +86,18 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
         new("haiku", "Haiku (fastest)")
     ];
 
-    private async Task<string> Run(string instruction, string stdinPayload, CancellationToken cancellationToken)
+    /// <summary>
+    /// A multi-turn run with an explicit tool allow-list, for the few jobs that need Claude to
+    /// act rather than just write text (currently: reading a PBI from Azure DevOps). Callers
+    /// choose the limits; tools outside <see cref="CliRunOptions.AllowedTools"/> are denied.
+    /// </summary>
+    public Task<string> RunRestricted(string instruction, string stdinPayload, CliRunOptions options, CancellationToken cancellationToken = default) =>
+        Run(instruction, stdinPayload, options, cancellationToken);
+
+    private Task<string> Run(string instruction, string stdinPayload, CancellationToken cancellationToken) =>
+        Run(instruction, stdinPayload, new CliRunOptions(), cancellationToken);
+
+    private async Task<string> Run(string instruction, string stdinPayload, CliRunOptions options, CancellationToken cancellationToken)
     {
         // Run from a scratch directory so the CLI does not pick up CLAUDE.md files or
         // other project context from whatever folder the app happens to be in.
@@ -90,7 +108,7 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
         // Local file, never transmitted.
         try
         {
-            File.WriteAllText(Path.Combine(workingDirectory, "last-prompt.txt"), stdinPayload);
+            File.WriteAllText(Path.Combine(workingDirectory, options.PromptLogName), stdinPayload);
         }
         catch
         {
@@ -124,7 +142,7 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
             startInfo.FileName = _cliPath;
         }
 
-        foreach (var argument in BuildArguments(instruction))
+        foreach (var argument in BuildArguments(instruction, _settings.CliModel, options))
             startInfo.ArgumentList.Add(argument);
 
         using var process = new Process { StartInfo = startInfo };
@@ -257,7 +275,7 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
         Process.Start(startInfo);
     }
 
-    private IEnumerable<string> BuildArguments(string instruction)
+    private static IEnumerable<string> BuildArguments(string instruction, string model, CliRunOptions options)
     {
         yield return "--print";
         yield return instruction;
@@ -266,12 +284,27 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
         yield return "json";
 
         yield return "--model";
-        yield return _settings.CliModel;
+        yield return model;
 
-        // One turn only: this is a single text generation, not an agentic session, and a
-        // loop here would burn the user's quota with nothing to show for it.
+        // Generation is one turn: a single text generation, not an agentic session, and a
+        // loop there would burn the user's quota with nothing to show for it.
         yield return "--max-turns";
-        yield return "1";
+        yield return options.MaxTurns.ToString();
+
+        // Variadic options go last so they cannot swallow a flag that follows them. In
+        // --print mode a tool that is not allowed is denied, not prompted for, so the allow
+        // list is a hard boundary rather than a request.
+        if (options.AllowedTools is { Count: > 0 })
+        {
+            yield return "--allowedTools";
+            yield return string.Join(",", options.AllowedTools);
+        }
+
+        if (options.DisallowedTools is { Count: > 0 })
+        {
+            yield return "--disallowedTools";
+            yield return string.Join(",", options.DisallowedTools);
+        }
     }
 
     /// <summary>
