@@ -138,12 +138,12 @@ public static partial class GherkinAssets
                 continue;
             }
 
-            if (!text.Contains("[Binding]", StringComparison.Ordinal))
+            if (!IsBindingClass(text))
                 continue;
 
             foreach (Match match in StepAttribute().Matches(text))
             {
-                var binding = new StepBinding(match.Groups["kw"].Value, match.Groups["pattern"].Value);
+                var binding = new StepBinding(match.Groups["kw"].Value, PatternText(match.Groups["pattern"].Value));
                 if (!bindings.Contains(binding))
                     bindings.Add(binding);
             }
@@ -179,7 +179,7 @@ public static partial class GherkinAssets
                 continue;
             }
 
-            if (!text.Contains("[Binding]", StringComparison.Ordinal))
+            if (!IsBindingClass(text))
                 continue;
 
             var bindingCount = StepAttribute().Matches(text).Count;
@@ -217,8 +217,36 @@ public static partial class GherkinAssets
         path.Contains($"{System.IO.Path.DirectorySeparatorChar}bin{System.IO.Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
         path.Contains($"{System.IO.Path.DirectorySeparatorChar}obj{System.IO.Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase);
 
-    [GeneratedRegex(@"\[(?<kw>Given|When|Then|StepDefinition)\(\s*""(?<pattern>[^""]+)""")]
+    /// <summary>
+    /// True when the text declares a Reqnroll/SpecFlow binding class. Looks for a Binding
+    /// attribute rather than the literal text "[Binding]": that exact spelling missed
+    /// [Binding, Scope(...)], [Scope(...), Binding], [Binding(...)] and a qualified
+    /// [Reqnroll.Binding] / [TechTalk.SpecFlow.Binding], so a suite written that way showed no
+    /// existing step files at all.
+    /// </summary>
+    public static bool IsBindingClass(string text) => BindingAttribute().IsMatch(text);
+
+    [GeneratedRegex(@"(?:\[|,)\s*(?:[\w.]+\.)?Binding\s*[\],(]")]
+    private static partial Regex BindingAttribute();
+
+    /// <summary>
+    /// A step attribute and its pattern literal. The pattern is captured WITH its quotes so the
+    /// two string forms can be told apart: a verbatim literal (@"^I search for ""(.*)""$", the
+    /// usual way to write a regex step) or a plain one. The old pattern accepted only a plain
+    /// literal straight after the parenthesis, which rejected every verbatim regex step, any
+    /// [Given ("...")] with a space, and a qualified [Reqnroll.Given(...)].
+    /// </summary>
+    [GeneratedRegex(@"(?:\[|,)\s*(?:[\w.]+\.)?(?<kw>Given|When|Then|StepDefinition)\s*\(\s*(?<pattern>@""(?:[^""]|"""")*""|""(?:[^""\\]|\\.)*"")")]
     private static partial Regex StepAttribute();
+
+    /// <summary>The pattern as the regex or Cucumber expression it denotes: quotes off, escapes undone.</summary>
+    private static string PatternText(string literal)
+    {
+        if (literal.StartsWith("@\"", StringComparison.Ordinal))
+            return literal[2..^1].Replace("\"\"", "\"");
+
+        return literal[1..^1].Replace("\\\"", "\"").Replace("\\\\", "\\");
+    }
 
     [GeneratedRegex(@"\bclass\s+(?<name>\w+)")]
     private static partial Regex BindingClassName();
