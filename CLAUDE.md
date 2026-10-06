@@ -99,6 +99,21 @@ in `PromptBuilder.Build`:
 For Gherkin, existing step bindings are listed verbatim in the prompt and reuse is the first rule —
 a BDD suite decays fast when every generated scenario invents a near-duplicate step.
 
+**How existing step files are recognised** (`GherkinAssets.FindStepDefinitionFiles` / `FindStepBindings`,
+which also feed `SolutionScanner`'s steps folder): a Binding *attribute* on the class
+(`IsBindingClass` — `[Binding]`, `[Binding, Scope(...)]`, `[Scope(...), Binding]`, qualified
+`[Reqnroll.Binding]`) **plus** at least one step attribute whose pattern is a string literal, plain
+`"..."` or verbatim `@"..."` (`[Given ("...")]` and qualified `[Reqnroll.Given(...)]` too). The folder
+name is irrelevant, so `StepsDefinitions`, `Steps`, `StepDefs` all work. Matching only the literal text
+`[Binding]` and a plain-quoted pattern right after `(` was a real bug: a suite written with verbatim
+regex steps (the usual way to write a regex step) showed an empty Step definitions picker, its steps
+were missing from the prompt's "reuse these" list so the model invented near-duplicates, and — with no
+step file recognised — new steps were routed to a freshly invented `StepDefinitions` folder beside the
+real one. Now, with no file recognised, an existing folder whose name contains "step" (or `Bindings`)
+is used before falling back to `StepDefinitions`. Not recognised: `[Given]` with no pattern (bound by
+method name). Settings → Test Solution says how many step files were found, and says so plainly when it
+is zero.
+
 **The three files have strict jobs.** The page object holds every locator and every action/query
 method for a page; the step definitions hold only assertions (they call page-object queries and
 `Assert.That`, never a selector); the feature holds the scenario. A page-object query waits for its

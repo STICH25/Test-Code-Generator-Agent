@@ -172,21 +172,29 @@ public static partial class SolutionScanner
             GherkinAssets.FindDirectoryContaining(rootPath, "*.feature")
             ?? (profile.SupportsGherkin ? Path.Combine(rootPath, "Features") : null);
 
-        // Prefer the folder that actually holds a [Binding] class; fall back to a
-        // conventional name so a first generation still has somewhere to go.
-        var bindingFile = files.FirstOrDefault(f =>
-            f.Text.Contains("[Binding]", StringComparison.Ordinal) &&
-            StepAttributePresent(f.Text));
+        // Prefer the folder that actually holds the step files - the one with the most of them,
+        // so a lone hooks or helper file elsewhere cannot win. Built from the same discovery
+        // that fills the Step definitions picker, so the two can never disagree about what a
+        // step file is.
+        var stepFolder = profile.StepDefinitionFiles
+            .GroupBy(f => Path.GetDirectoryName(f.Path)!, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenByDescending(g => g.Sum(f => f.BindingCount))
+            .FirstOrDefault();
 
-        if (bindingFile.Path != null)
+        if (stepFolder != null)
         {
-            profile.StepDefinitionsDirectory = Path.GetDirectoryName(bindingFile.Path);
-            profile.StepClassSource = Truncate(bindingFile.Text, MaxExampleLength);
-            profile.StepClassName = Path.GetFileNameWithoutExtension(bindingFile.Path);
+            var representative = stepFolder.OrderByDescending(f => f.BindingCount).First();
+            profile.StepDefinitionsDirectory = stepFolder.Key;
+            profile.StepClassSource = Truncate(representative.Source, MaxExampleLength);
+            profile.StepClassName = representative.ClassName;
         }
         else if (profile.SupportsGherkin)
         {
-            profile.StepDefinitionsDirectory = Path.Combine(rootPath, "StepDefinitions");
+            // No step file recognised. Still prefer a folder the solution already has for them -
+            // whatever it is called (Steps, StepsDefinitions, StepDefs...) - over inventing a
+            // second, differently-named one beside it.
+            profile.StepDefinitionsDirectory = FindStepsFolder(rootPath) ?? Path.Combine(rootPath, "StepDefinitions");
         }
 
         if (profile.SupportsGherkin)
@@ -217,11 +225,16 @@ public static partial class SolutionScanner
             : $"{profile.PageObjects.Count} page object(s) found in {profile.PageObjectsDirectory}.");
     }
 
-    private static bool StepAttributePresent(string text) =>
-        text.Contains("[Given(", StringComparison.Ordinal) ||
-        text.Contains("[When(", StringComparison.Ordinal) ||
-        text.Contains("[Then(", StringComparison.Ordinal) ||
-        text.Contains("[StepDefinition(", StringComparison.Ordinal);
+    /// <summary>An existing folder that looks like it holds step definitions, by name; null if none does.</summary>
+    private static string? FindStepsFolder(string rootPath) =>
+        Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
+            .Where(d => !IsBuildOutput(d + Path.DirectorySeparatorChar))
+            .FirstOrDefault(d =>
+            {
+                var name = Path.GetFileName(d);
+                return name.Contains("step", StringComparison.OrdinalIgnoreCase) ||
+                       name.Equals("Bindings", StringComparison.OrdinalIgnoreCase);
+            });
 
     private static void DetectBaseUrl(string rootPath, SolutionProfile profile)
     {

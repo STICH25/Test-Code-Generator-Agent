@@ -647,7 +647,12 @@ public class SettingsForm : Form
             // the mistake this line makes visible.
             if (profile.CanWriteGherkin)
             {
-                summary.Add($"Gherkin (Reqnroll): {profile.Features.Count} feature file(s), {profile.StepBindings.Count} existing step(s)");
+                summary.Add($"Gherkin (Reqnroll): {profile.Features.Count} feature file(s), {profile.StepBindings.Count} existing step(s) in {profile.StepDefinitionFiles.Count} file(s)");
+
+                // Existing steps drive reuse and the Step definitions picker, so say so plainly
+                // when none were recognised rather than leaving an empty list to puzzle over.
+                if (profile.StepDefinitionFiles.Count == 0)
+                    summary.Add("No step definition files recognised: looked for [Binding] classes with [Given]/[When]/[Then] attributes. Existing steps will not be offered for reuse.");
                 summary.Add($"Features go in: {profile.FeaturesDirectory}");
                 summary.Add($"Steps go in: {profile.StepDefinitionsDirectory}");
             }
