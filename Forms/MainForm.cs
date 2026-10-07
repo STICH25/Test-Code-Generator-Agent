@@ -17,8 +17,9 @@ public partial class MainForm : Form
 
     /// <summary>
     /// Debug screenshots from the last recording, in capture order. Cleared - files and all,
-    /// via <see cref="ClearScreenshots"/> - whenever a new recording starts, Clear is
-    /// pressed, or Insert succeeds, so this list never outlives the run it belongs to.
+    /// via <see cref="ClearScreenshots"/> - whenever a new recording starts, or the generated
+    /// code is cleared (Clear, or "yes" to the prompt after Insert), so this list never
+    /// outlives the run it belongs to.
     /// </summary>
     private List<ScreenshotEntry> _recordedScreenshots = [];
     private ExplorationAgent _agent = null!;
@@ -640,20 +641,7 @@ public partial class MainForm : Form
         };
 
         _clearButton = new PillButton { Text = "Clear", Style = PillStyle.Ghost, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0) };
-        _clearButton.Click += (s, e) =>
-        {
-            var what = ActiveOutputName;
-
-            if (string.IsNullOrWhiteSpace(ActiveOutputBox.Text))
-            {
-                SetStatus($"The {what} is already empty.", Theme.TextSecondary);
-                return;
-            }
-
-            ActiveOutputBox.Clear();
-            ClearScreenshots();
-            SetStatus($"Cleared the {what}.", Theme.TextSecondary);
-        };
+        _clearButton.Click += (s, e) => ClearFromButton();
 
         _openFolderButton = new PillButton { Text = "Folder", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
         _openFolderButton.Click += (s, e) => OpenSolutionFolder();
@@ -1566,10 +1554,80 @@ public partial class MainForm : Form
         var names = string.Join(", ", written.Select(a => Path.GetFileName(a.WrittenPath!)));
         SetStatus($"Inserted into solution: {names}", Theme.Accent);
 
-        ClearScreenshots();
-
         // Picking up a newly created (or newly extended) file requires a rescan.
         RescanSolution();
+
+        // The files are on disk now, so what is left on screen is a duplicate of them - and
+        // the next Generate would otherwise start beside code from a run that is finished.
+        // Asked rather than assumed, because the user may want to keep reviewing or tweak
+        // and Insert again; the write above has already happened either way.
+        if (ConfirmDialog.Ask(this, "Clear generated code?",
+                $"Inserted {written.Count} file(s) into the solution.\n\n" +
+                "Clear the generated feature, page object, steps and screenshots so the next test starts clean?",
+                yesText: "Yes, clear", noText: "No, keep"))
+        {
+            ClearGenerated();
+            SetStatus($"Inserted into solution: {names}. Generated code cleared.", Theme.Accent);
+        }
+    }
+
+    /// <summary>
+    /// The Clear button. On a code tab it clears everything the last run generated - all
+    /// three files and the debug screenshots, not just the tab on show - after asking.
+    /// Clearing only the visible tab used to leave the other two (and the artifacts Insert
+    /// writes) holding last session's code, which then collided with the next generation.
+    /// On the Log tab it only empties the log, which is diagnostics rather than generated code.
+    /// </summary>
+    private void ClearFromButton()
+    {
+        if (_outputTabs.SelectedIndex == 3)
+        {
+            if (string.IsNullOrWhiteSpace(_logTextBox.Text))
+            {
+                SetStatus("The log is already empty.", Theme.TextSecondary);
+                return;
+            }
+
+            _logTextBox.Clear();
+            SetStatus("Cleared the log.", Theme.TextSecondary);
+            return;
+        }
+
+        if (!HasGeneratedOutput)
+        {
+            SetStatus("Nothing to clear - no generated code yet.", Theme.TextSecondary);
+            return;
+        }
+
+        if (!ConfirmDialog.Ask(this, "Clear all generated code?",
+                "This clears the feature file, page object and step definitions, including any edits " +
+                "you made, plus the debug screenshots.\n\nNothing is deleted from your test solution.",
+                yesText: "Yes, clear", noText: "No"))
+        {
+            SetStatus("Clear cancelled - the current session is unchanged.", Theme.TextSecondary);
+            return;
+        }
+
+        ClearGenerated();
+        SetStatus("Cleared all generated code and screenshots.", Theme.TextSecondary);
+    }
+
+    private bool HasGeneratedOutput =>
+        _lastArtifacts.Count > 0 || _recordedScreenshots.Count > 0 ||
+        !string.IsNullOrWhiteSpace(_featureTextBox.Text) ||
+        !string.IsNullOrWhiteSpace(_pageObjectTextBox.Text) ||
+        !string.IsNullOrWhiteSpace(_stepsTextBox.Text);
+
+    /// <summary>
+    /// Forgets the last run's output everywhere it lives: the artifacts (what Edit changes
+    /// and Insert writes), the three tab boxes that display them, and the screenshots.
+    /// </summary>
+    private void ClearGenerated()
+    {
+        _lastArtifacts = [];
+        PopulateArtifactTabs();
+        ClearScreenshots();
+        UpdateInsertButtonState();
     }
 
     private void RescanSolution()
