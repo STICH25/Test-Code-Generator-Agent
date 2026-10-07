@@ -279,8 +279,19 @@ both writing numbered PNGs there and listing them in the **Screenshots** viewer 
   keyword scoring, because generic words ("device", "value", "online") otherwise let a short
   unrelated heading beat the real one.
 
-Screenshots are debug-only and are deleted when a new recording starts, on Clear, and after Insert.
-They are never written into the linked solution.
+Screenshots are debug-only and are deleted when a new recording starts and whenever the generated code
+is cleared (Clear, or *Yes* to the prompt after Insert). They are never written into the linked solution.
+
+### Clearing generated output
+
+`MainForm.ClearGenerated` is the one place that forgets a run: it empties `_lastArtifacts` (what Edit
+changes and Insert writes), re-populates the three tab boxes from it, clears the screenshots and
+refreshes Insert's enabled state. Clearing only the visible TextBox - as Clear once did - leaves the
+artifacts behind, so Insert would still write the old code and the other tabs would show last
+session's files. Both Clear and the post-Insert prompt go through `ConfirmDialog` (themed;
+`MessageBox` cannot be darkened), whose default and Escape answer is No because these questions guard
+destructive actions. Insert has already written by the time it asks, so No there only keeps the code
+on screen. On the Log tab Clear empties just the log, which is diagnostics rather than generated code.
 
 ## UI conventions
 

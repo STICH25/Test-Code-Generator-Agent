@@ -85,6 +85,8 @@ password fields are recorded as `<redacted>`.
 The result appears in tabs for you to review. Nothing is written to your solution until you press
 **Insert**, and **Edit** opens the active tab's code in its own window if you want to change it first.
 
+**Clear** empties all three generated files (and the debug screenshots), whichever tab is showing, after asking you to confirm; answer *No* and the session carries on untouched. The Log tab is separate: Clear there only empties the log. After **Insert** you are asked whether to clear the generated code too, so the next test starts from a clean slate; answer *No* to keep it on screen.
+
 | Suite type | Files produced |
 |---|---|
 | Reqnroll / Gherkin | `Features/<Name>.feature`, a page object (`Pages/<Name>Page.cs`) and `StepDefinitions/<Name>Steps.cs` |
@@ -125,7 +127,7 @@ Your test solution may not be under version control, so writes are guarded:
 click is captured; for a typed objective, the section that was matched is captured, so you can see
 whether the right part of the page was tested. The **Screenshots** button opens them in order. They
 live only in that folder, are never written into your solution, and are deleted when you start a new
-recording, press **Clear**, or **Insert**.
+recording, or when you clear the generated code (**Clear**, or answering *Yes* to the prompt after **Insert**).
 
 **Azure DevOps PBIs** — name a PBI in the objective, e.g. *"Check PBI 4242 and write the tests"* (or
 paste its work-item link), and the PBI and its linked Test Cases are read from Azure DevOps so the
