@@ -300,6 +300,27 @@ session's files. Both Clear and the post-Insert prompt go through `ConfirmDialog
 destructive actions. Insert has already written by the time it asks, so No there only keeps the code
 on screen. On the Log tab Clear empties just the log, which is diagnostics rather than generated code.
 
+### Running the generated test (the Run button)
+
+`GeneratedTestRunner.Run` verifies output without touching the linked solution: it `robocopy /MIR`s
+the solution into `%TEMP%\PlaywrightAgentAI.run\<name>-<hash>` (one folder per solution so `bin`/`obj`
+survive and later runs are incremental; the mirror refuses any destination outside that root because
+`/MIR` deletes), rescans the copy, writes the artifacts there through the same `SolutionWriter` rules
+as Insert (with `TargetPath`s remapped into the copy), and runs `dotnet test` on the project that
+references `Microsoft.NET.Test.Sdk`. Results come from a TRX file, not from scraping console output.
+
+Which tests run is decided by a **tag, not by method names**: in the copy only, `@pa_verify` is added
+above each scenario that is new relative to the feature file the user chose to extend (or above all of
+them), and the filter is `TestCategory=pa_verify`. Guessing Reqnroll's generated method names to build a
+`FullyQualifiedName~` filter is brittle; the tag is not. A plain `[TestFixture]` is filtered by class name.
+
+A run ends as Passed, Failed (tests ran), BuildFailed (compile errors - a defect in the output, never
+offered the PBI note), NoTestsFound, TimedOut (10 min), Cancelled or Error. `RunResultDialog` offers
+**Add note: PBI incomplete** only for Failed, because only the user can say whether a failure is an
+unfinished PBI or a bad locator; `RunNotes` then adds one idempotent comment line above each failed
+scenario (above `[TestFixture]` for a fixture), hedged as "may be incomplete". While running, `_running`
+is set so Generate/Record wait, and Insert, Clear and Run are held off.
+
 ## UI conventions
 
 Everything is hand-built in code; the designer file only carries form-level scaling. `UI/Theme.cs`

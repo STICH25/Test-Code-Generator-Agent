@@ -102,6 +102,25 @@ For a Gherkin suite the three files have separate jobs: the **page object** hold
 the methods that act on or read the page, the **step definitions** hold only the assertions, and the
 **feature** holds the scenario. A `Pages` folder is created if your solution doesn't have one yet.
 
+### Run it before you insert it
+
+**Run** (beside Insert) builds and runs the generated test *before* anything is added to your
+solution. It copies your solution to a scratch folder under `%TEMP%`, writes the new files there the
+same way Insert would, and runs only the new scenarios with `dotnet test` - your real solution is
+never touched, and nothing leaves your machine. The build output streams into the Log tab, and
+**Cancel** stops it. The first run builds from cold and can take a minute; later runs reuse the
+build.
+
+- **Passed** - the status bar says so; press Insert when you are happy.
+- **Failed** - a window shows what failed. If it fails because the PBI you are working from is not
+  finished yet (the page does not have what the test looks for), press **Add note: PBI incomplete**
+  and a one-line comment is added above the scenario, e.g.
+  `# NOTE (not yet passing, verified 2026-10-07): PBI 4242 may be incomplete - <first error line>`.
+  The app cannot tell an unfinished page from a wrong locator, so adding the note is your call. It
+  appears in the Feature tab, so you can still edit or remove it before Insert.
+- **Does not build** - the new code has compile errors. That is a problem with the generated code,
+  not the PBI, so no note is offered; edit it or generate again.
+
 **Open Folder** reveals where they landed. Then build and run them with your normal tooling:
 
 ```bash
