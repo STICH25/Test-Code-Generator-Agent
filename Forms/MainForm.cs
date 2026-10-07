@@ -34,6 +34,11 @@ public partial class MainForm : Form
 
     private CancellationTokenSource? _cts;
 
+    // The "Run" check of the generated test. Counts as busy (_running) so Generate and Record
+    // wait for it, but is tracked separately so Insert can be held back too.
+    private CancellationTokenSource? _runCts;
+    private bool _testRunning;
+
     // The Claude connection gate (see SetConnectionLocked). _verifyVersion lets a newer check, or
     // a pass reported by the Settings dialog, supersede one still in flight.
     private bool _connectionVerified;
@@ -68,6 +73,7 @@ public partial class MainForm : Form
     private PillButton _settingsButton = null!;
     private PillButton _openFolderButton = null!;
     private PillButton _insertButton = null!;
+    private PillButton _runButton = null!;
     private PillButton _recordButton = null!;
     private PillButton _screenshotsButton = null!;
     private DarkComboBox _featureBox = null!;
@@ -190,7 +196,7 @@ public partial class MainForm : Form
         PillButton[] gated =
         [
             _previewButton, _generateButton, _cancelButton, _recordButton, _screenshotsButton,
-            _editButton, _clearButton, _copyButton, _openFolderButton, _insertButton
+            _editButton, _clearButton, _copyButton, _openFolderButton, _runButton, _insertButton
         ];
 
         foreach (var button in gated)
@@ -568,6 +574,7 @@ public partial class MainForm : Form
             _cancelButton.Enabled = false;
             SetStatus("Cancelling...", Theme.TextSecondary);
             _cts?.Cancel();
+            _runCts?.Cancel();
         };
 
         _recordButton = new PillButton { Text = "Record", Style = PillStyle.Outline, Width = 104, Dock = DockStyle.Fill };
@@ -646,6 +653,9 @@ public partial class MainForm : Form
         _openFolderButton = new PillButton { Text = "Folder", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
         _openFolderButton.Click += (s, e) => OpenSolutionFolder();
 
+        _runButton = new PillButton { Text = "Run", Style = PillStyle.Outline, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
+        _runButton.Click += async (s, e) => await RunGeneratedTest();
+
         _insertButton = new PillButton { Text = "Insert", Style = PillStyle.Primary, Height = 32, Dock = DockStyle.Fill, Margin = new Padding(6, 0, 0, 0), Enabled = false };
         _insertButton.Click += (s, e) => InsertToSolution();
 
@@ -656,7 +666,7 @@ public partial class MainForm : Form
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 6,
+            ColumnCount = 7,
             RowCount = 1,
             BackColor = Theme.SurfaceAlt,
             Margin = new Padding(0, 0, 0, 8)
@@ -666,6 +676,7 @@ public partial class MainForm : Form
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 66));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 54));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
 
         _outputTabs.Dock = DockStyle.Fill;
@@ -676,7 +687,8 @@ public partial class MainForm : Form
         header.Controls.Add(_clearButton, 2, 0);
         header.Controls.Add(_copyButton, 3, 0);
         header.Controls.Add(_openFolderButton, 4, 0);
-        header.Controls.Add(_insertButton, 5, 0);
+        header.Controls.Add(_runButton, 5, 0);
+        header.Controls.Add(_insertButton, 6, 0);
         layout.Controls.Add(header, 0, 0);
 
         // Code does not wrap - wrapping changes how it reads. Log lines do, because they
@@ -1155,6 +1167,7 @@ public partial class MainForm : Form
         _previewButton.Enabled = !running;
         _activityBar.Running = running;
         UseWaitCursor = running;
+        UpdateInsertButtonState();
     }
 
     /// <summary>
@@ -1315,6 +1328,7 @@ public partial class MainForm : Form
         _recordButton.Style = recording ? PillStyle.Primary : PillStyle.Outline;
         _generateButton.Enabled = !recording;
         _previewButton.Enabled = !recording;
+        UpdateInsertButtonState();
     }
 
     // ---------------------------------------------------------------- target pickers
@@ -1630,6 +1644,111 @@ public partial class MainForm : Form
         UpdateInsertButtonState();
     }
 
+    /// <summary>
+    /// Builds and runs the generated test in a scratch copy of the linked solution, so it can be
+    /// checked before it is inserted. Nothing is written to the real solution. If tests ran and
+    /// failed, the user can have a one-line comment added saying the PBI looks unfinished - the
+    /// app cannot tell that apart from a bad locator, so it is the user's call.
+    /// </summary>
+    private async Task RunGeneratedTest()
+    {
+        if (IsBusy)
+        {
+            SetStatus("Wait for the current run to finish first.", Theme.Warning);
+            return;
+        }
+
+        if (_solutionProfile is not { CanInsert: true } profile)
+        {
+            SetStatus("Link a solution in Settings first - the test runs in a copy of it.", Theme.Warning);
+            return;
+        }
+
+        if (_lastArtifacts.Count == 0)
+        {
+            SetStatus("Generate a test first.", Theme.Warning);
+            return;
+        }
+
+        var pbiId = PbiReferenceFinder.Find(_objectiveField.Text)?.Id;
+        var artifacts = _lastArtifacts.ToList();
+
+        _runCts?.Dispose();
+        _runCts = new CancellationTokenSource();
+        var token = _runCts.Token;
+
+        SetTestRunning(true);
+        _outputTabs.SelectedIndex = 3; // Log, where the build output streams
+
+        try
+        {
+            SetStatus("Running the test in a temporary copy of your solution - the first build can take a minute...", Theme.Accent);
+
+            var result = await Task.Run(() => GeneratedTestRunner.Run(profile, artifacts, token));
+
+            Console.WriteLine($"Verify: {result.Outcome} - {result.Summary}");
+            foreach (var test in result.Tests)
+                Console.WriteLine($"  {(test.Passed ? "PASS" : "FAIL")} {test.Name}");
+
+            switch (result.Outcome)
+            {
+                case TestRunOutcome.Passed:
+                    SetStatus($"Verified: {result.Summary} Nothing was added to your solution - press Insert when you are happy with it.", Theme.Accent);
+                    break;
+
+                case TestRunOutcome.Cancelled:
+                    SetStatus("Cancelled.", Theme.TextSecondary);
+                    break;
+
+                default:
+                    var failedColor = result.Outcome is TestRunOutcome.Failed or TestRunOutcome.NoTestsFound
+                        ? Theme.Warning
+                        : Theme.Danger;
+                    SetStatus(result.Summary, failedColor);
+
+                    if (RunResultDialog.Show(this, result, pbiId is { } id ? $"PBI {id}" : null))
+                        AddIncompleteNote(result, pbiId);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Verify failed: {ex}");
+            SetStatus($"Could not run the test: {ex.Message}", Theme.Danger);
+        }
+        finally
+        {
+            SetTestRunning(false);
+        }
+    }
+
+    private void AddIncompleteNote(TestRunResult result, int? pbiId)
+    {
+        var added = RunNotes.AddIncompleteNote(_lastArtifacts, result, pbiId);
+        PopulateArtifactTabs();
+        _outputTabs.SelectedIndex = _lastArtifacts.Any(a => a.Kind == ArtifactKind.Feature) ? 0 : 2;
+
+        SetStatus(
+            added > 0
+                ? "Added a note that the PBI looks incomplete. Review it, then press Insert."
+                : "That note was already there. Press Insert when you are ready.",
+            Theme.Accent);
+    }
+
+    private void SetTestRunning(bool running)
+    {
+        _testRunning = running;
+        _running = running;
+        _generateButton.Enabled = !running;
+        _recordButton.Enabled = !running;
+        _previewButton.Enabled = !running;
+        _clearButton.Enabled = !running;
+        _cancelButton.Enabled = running;
+        _activityBar.Running = running;
+        UseWaitCursor = running;
+        UpdateInsertButtonState();
+    }
+
     private void RescanSolution()
     {
         if (string.IsNullOrWhiteSpace(_settings.TestSolutionPath))
@@ -1678,7 +1797,8 @@ public partial class MainForm : Form
         var solutionReady = _solutionProfile is { CanInsert: true };
 
         _openFolderButton.Enabled = solutionReady;
-        _insertButton.Enabled = solutionReady && _lastArtifacts.Count > 0;
+        _insertButton.Enabled = solutionReady && _lastArtifacts.Count > 0 && !_testRunning;
+        _runButton.Enabled = solutionReady && _lastArtifacts.Count > 0 && !IsBusy;
     }
 
     /// <summary>Reveals where generated files land, independent of whether anything has been inserted yet.</summary>
