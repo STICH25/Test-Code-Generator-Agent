@@ -407,7 +407,9 @@ public partial class MainForm : Form
         // Panel minimums and SplitterDistance are validated against the container's
         // current size, and a SplitContainer starts at its default 150px. Setting them
         // before it is docked and parented throws InvalidOperationException.
-        ConfigureSplit(mainSplit, minPanel1: 420, minPanel2: 320, desired: 660);
+        // The output header (tabs + Edit/Clear/Copy/Folder/Run/Insert) needs about 720px for all four tabs to
+        // show; at 660 the Log tab was clipped out of existence once Run was added.
+        ConfigureSplit(mainSplit, minPanel1: 480, minPanel2: 320, desired: 724);
         // The input card's fixed rows now total three target pickers (Feature / Page
         // Object / Steps, 88px each) plus the url row and card padding - about 640px
         // before the objective field gets a usable height rather than a sliver. If you
