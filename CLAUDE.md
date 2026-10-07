@@ -263,6 +263,13 @@ are registered in the **capture phase** so a site calling `stopPropagation` cann
 Each action reports several ways to address the element (test id, role + accessible name, text, CSS
 path) and the model picks the most durable. Password fields record as `<redacted>`.
 
+`MainForm.RefreshPreview` (Refresh button, F5 via `ProcessCmdKey`) calls `CoreWebView2.Reload()` on
+the page being shown, falling back to the typed URL only when nothing is loaded. It is deliberately
+not `LoadPreview`, which navigates to the URL field and would throw away where the user had got to.
+It is allowed mid-recording: `PreviewRecorder.OnNavigationCompleted` only records a navigation when
+`_core.Source` differs from the last URL, so a same-page reload adds no step. A `SourceChanged`
+handler keeps the header label on the page actually shown, since that is what Refresh reloads.
+
 ### Debug screenshots
 
 Optional, enabled by **Settings → Debug Screenshots** (a local folder; blank disables it). Two paths,
