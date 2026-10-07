@@ -80,6 +80,12 @@ provider you chose.
 The recorded steps become the specification, so no written objective is required. Values typed into
 password fields are recorded as `<redacted>`.
 
+**Refresh** (top right of the preview, or **F5**) reloads the page you are on, wherever you have
+clicked through to, so a session that expired while you were idle can be renewed without losing your
+place. It works during a recording too: reloading the same page is not recorded as a step, though
+being sent back to a login page is, since that is what happened. The **Preview** button next to the
+URL is different - it always goes back to the address typed there.
+
 ### What happens next
 
 The result appears in tabs for you to review. Nothing is written to your solution until you press

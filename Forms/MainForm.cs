@@ -62,6 +62,7 @@ public partial class MainForm : Form
     private PillButton _generateButton = null!;
     private PillButton _cancelButton = null!;
     private PillButton _previewButton = null!;
+    private PillButton _refreshButton = null!;
     private PillButton _editButton = null!;
     private PillButton _copyButton = null!;
     private PillButton _clearButton = null!;
@@ -189,7 +190,7 @@ public partial class MainForm : Form
     {
         PillButton[] gated =
         [
-            _previewButton, _generateButton, _cancelButton, _recordButton, _screenshotsButton,
+            _previewButton, _refreshButton, _generateButton, _cancelButton, _recordButton, _screenshotsButton,
             _editButton, _clearButton, _copyButton, _openFolderButton, _insertButton
         ];
 
@@ -740,6 +741,21 @@ public partial class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             Text = "Preview"
         });
+
+        // Reloads the page that is on screen, wherever the user has navigated to. The Preview
+        // button beside the URL always goes back to the typed address, which is the wrong tool
+        // for a session that expired mid-flow: that would throw away the user's place.
+        // Docked after the title and before the URL label takes the leftover space, as above.
+        _refreshButton = new PillButton { Text = "Refresh", Style = PillStyle.Outline, Dock = DockStyle.Fill };
+        _refreshButton.Click += async (s, e) => await RefreshPreview();
+        header.Controls.Add(new Panel
+        {
+            Dock = DockStyle.Right,
+            Width = 98,
+            BackColor = Theme.SurfaceAlt,
+            Padding = new Padding(8, 2, 0, 2),
+            Controls = { _refreshButton }
+        });
         layout.Controls.Add(header, 0, 0);
 
         _webView = new WebView2
@@ -967,7 +983,18 @@ public partial class MainForm : Form
             // DefaultBackgroundColor only takes effect once a document exists; with no
             // navigation at all the control paints solid black.
             if (_webViewReady)
+            {
+                // The label otherwise keeps showing the address that was typed, even after the
+                // user has clicked through to another page - which is the page Refresh reloads.
+                _webView.CoreWebView2!.SourceChanged += (s, e) =>
+                {
+                    var source = _webView.CoreWebView2?.Source;
+                    if (!string.IsNullOrWhiteSpace(source) && source != "about:blank")
+                        _previewUrlLabel.Text = source;
+                };
+
                 _webView.CoreWebView2!.Navigate("about:blank");
+            }
 
             return _webViewReady;
         }
@@ -1004,6 +1031,51 @@ public partial class MainForm : Form
             Console.Error.WriteLine($"Preview navigation failed: {ex.Message}");
             SetStatus($"Preview failed: {ex.Message}", Theme.Danger);
         }
+    }
+
+    /// <summary>
+    /// Reloads whatever page the preview is showing, so a session that expired while the
+    /// user was idle can be renewed without leaving the page they were on. Falls back to the
+    /// typed URL when nothing has been loaded yet. Allowed mid-recording: the recorder's
+    /// script is registered for every new document, a reload of the same address is not
+    /// recorded as a step, and if the expired session bounces to a login page that
+    /// navigation is recorded, which is what actually happened.
+    /// </summary>
+    private async Task RefreshPreview()
+    {
+        if (_refreshButton.Locked)
+            return;
+
+        var current = _webViewReady ? _webView.CoreWebView2?.Source : null;
+        if (string.IsNullOrWhiteSpace(current) || current == "about:blank")
+        {
+            await LoadPreview();
+            return;
+        }
+
+        try
+        {
+            _webView.CoreWebView2!.Reload();
+            SetStatus($"Preview refreshing {current}", Theme.TextSecondary);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Preview refresh failed: {ex.Message}");
+            SetStatus($"Preview refresh failed: {ex.Message}", Theme.Danger);
+        }
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        // F5 is the browser convention. WebView2 reloads on its own when it has focus; this
+        // covers the rest of the window, where the key would otherwise do nothing.
+        if (keyData == Keys.F5)
+        {
+            _ = RefreshPreview();
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private static string? NormalizeUrl(string raw)
