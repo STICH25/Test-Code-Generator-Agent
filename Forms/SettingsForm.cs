@@ -57,6 +57,13 @@ public class SettingsForm : Form
     /// <summary>The saved settings. Only meaningful when the dialog returns OK.</summary>
     public AppSettings Result => _draft;
 
+    /// <summary>
+    /// True when Test Connection passed for the provider, key and model as they are now. Changing
+    /// any of those clears it, because a pass for the old choice says nothing about the new one.
+    /// The main window uses this to unlock itself without testing a second time.
+    /// </summary>
+    public bool ConnectionVerified { get; private set; }
+
     // ---------------------------------------------------------------- layout
 
     private void BuildLayout()
@@ -121,6 +128,7 @@ public class SettingsForm : Form
         _providerBox.Items.Add("Anthropic API key");
         _providerBox.SelectedIndexChanged += (s, e) =>
         {
+            ConnectionVerified = false;
             _draft.Provider = _providerBox.SelectedIndex == 1 ? ClaudeProvider.ApiKey : ClaudeProvider.ClaudeCodeCli;
             ApplyProviderVisibility();
         };
@@ -135,6 +143,7 @@ public class SettingsForm : Form
         {
             // The loaded model list belongs to the previous key.
             _modelsLoaded = false;
+            ConnectionVerified = false;
             SetStatus("Key changed - test the connection to refresh the model list.", Theme.TextSecondary);
         };
 
@@ -172,6 +181,8 @@ public class SettingsForm : Form
         _modelBox = new DarkComboBox { Dock = DockStyle.Fill, Height = 34, Margin = new Padding(0, 0, 0, 6) };
         _modelBox.SelectedIndexChanged += (s, e) =>
         {
+            ConnectionVerified = false;
+
             if (_modelBox.SelectedItem is not ClaudeModel model)
                 return;
 
@@ -746,6 +757,10 @@ public class SettingsForm : Form
             PopulateModels(result.Models);
             _modelsLoaded = true;
             SetStatus(result.Message, Theme.Accent);
+
+            // Set last: populating the model list above fires the model-changed handler, which
+            // clears this.
+            ConnectionVerified = true;
         }
         catch (OperationCanceledException)
         {
@@ -765,10 +780,18 @@ public class SettingsForm : Form
             _modelBox.Items.Add(model);
 
         // Keep the current selection if the account still offers it, otherwise fall back
-        // to the default model, and only then to whatever is first.
-        var index = models.ToList().FindIndex(m => m.Id == _draft.Model);
+        // to the default model, and only then to whatever is first. "Current" depends on the
+        // provider: the CLI keeps its model in CliModel. Looking up the API model here for
+        // both meant a CLI user's choice never matched, so every Test Connection silently
+        // reset it to the first entry in the list.
+        var cli = _draft.Provider == ClaudeProvider.ClaudeCodeCli;
+        var current = cli ? _draft.CliModel : _draft.Model;
+        var fallback = cli ? new AppSettings().CliModel : AppSettings.DefaultModel;
+
+        var list = models.ToList();
+        var index = list.FindIndex(m => m.Id == current);
         if (index < 0)
-            index = models.ToList().FindIndex(m => m.Id == AppSettings.DefaultModel);
+            index = list.FindIndex(m => m.Id == fallback);
 
         _modelBox.SelectedIndex = Math.Max(0, index);
     }

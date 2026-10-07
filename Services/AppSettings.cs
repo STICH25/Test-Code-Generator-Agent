@@ -21,7 +21,10 @@ public enum ClaudeProvider
 /// </summary>
 public class AppSettings
 {
-    public const string DefaultModel = "claude-opus-5";
+    // Sonnet is the default: it is noticeably faster and cheaper than Opus and is enough for
+    // most scenarios. Opus stays one dropdown away for the hard ones. This only applies to a
+    // new settings file - anyone who already chose a model keeps their choice.
+    public const string DefaultModel = "claude-sonnet-5";
 
     /// <summary>
     /// Defaults to the CLI: organisations often supply a Claude Code seat without
@@ -33,7 +36,7 @@ public class AppSettings
     public string? ClaudeCliPath { get; set; }
 
     /// <summary>Model alias passed to the CLI's --model flag.</summary>
-    public string CliModel { get; set; } = "opus";
+    public string CliModel { get; set; } = "sonnet";
 
     /// <summary>Root folder of the linked test-automation solution, if any.</summary>
     public string? TestSolutionPath { get; set; }

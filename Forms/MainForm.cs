@@ -32,6 +32,20 @@ public partial class MainForm : Form
     private List<GeneratedArtifact> _lastArtifacts = [];
 
     private CancellationTokenSource? _cts;
+
+    // The Claude connection gate (see SetConnectionLocked). _verifyVersion lets a newer check, or
+    // a pass reported by the Settings dialog, supersede one still in flight.
+    private bool _connectionVerified;
+    private bool _verifying;
+    private int _verifyVersion;
+    private CancellationTokenSource? _verifyCts;
+
+    // Tracked here rather than read back from the buttons, because a locked button reports
+    // itself disabled and would look "busy" when it is only waiting for the connection check.
+    private bool _running;
+    private bool _recordingUi;
+    private bool IsBusy => _running || _recordingUi;
+
     private bool _webViewReady;
     private string _lastPreviewedUrl = "";
     private Region? _webViewRegion;
@@ -74,6 +88,11 @@ public partial class MainForm : Form
         BuildLayout();
 
         _settings = SettingsStore.Load();
+
+        // Locked from the first frame, so nothing is clickable in the moment before the
+        // connection check starts.
+        SetConnectionLocked(true);
+
         RebuildAgent();
     }
 
@@ -141,7 +160,11 @@ public partial class MainForm : Form
         if (_settings.IsConfigured)
         {
             var via = _settings.Provider == ClaudeProvider.ClaudeCodeCli ? "Claude Code CLI" : "Anthropic API";
-            SetStatus($"Ready - {via}, model {_settings.ActiveModel}.", Theme.TextSecondary);
+            SetStatus(
+                _connectionVerified
+                    ? $"Ready - {via} connected, model {_settings.ActiveModel}."
+                    : $"{via}, model {_settings.ActiveModel} - connection not verified yet.",
+                Theme.TextSecondary);
             return;
         }
 
@@ -152,16 +175,155 @@ public partial class MainForm : Form
             Theme.Warning);
     }
 
+    // ---------------------------------------------------------------- connection gate
+
+    /// <summary>
+    /// Every button except Settings stays disabled until the Claude connection has been verified
+    /// with a real call. An expired session otherwise only shows itself after the user has done
+    /// the work - a recording, say - and the generation that follows fails. The lock is on the
+    /// button itself (<see cref="PillButton.Locked"/>), so none of the many places that enable
+    /// and disable buttons can undo it.
+    /// </summary>
+    private void SetConnectionLocked(bool locked)
+    {
+        PillButton[] gated =
+        [
+            _previewButton, _generateButton, _cancelButton, _recordButton, _screenshotsButton,
+            _editButton, _clearButton, _copyButton, _openFolderButton, _insertButton
+        ];
+
+        foreach (var button in gated)
+            button.Locked = locked;
+    }
+
+    /// <summary>Tests the connection for real and unlocks the window if it passes.</summary>
+    private async Task VerifyConnectionAsync()
+    {
+        _verifyCts?.Cancel();
+        _verifyCts?.Dispose();
+        var cts = _verifyCts = new CancellationTokenSource();
+        var version = ++_verifyVersion;
+
+        _connectionVerified = false;
+        SetConnectionLocked(true);
+
+        if (!_settings.IsConfigured)
+        {
+            // Nothing to test - the CLI is missing or there is no key. Say what is missing.
+            ReflectConnectionState();
+            return;
+        }
+
+        SetStatus("Checking the Claude connection...", Theme.Accent);
+        _verifying = true;
+        _activityBar.Running = true;
+
+        try
+        {
+            var result = _settings.Provider == ClaudeProvider.ClaudeCodeCli
+                ? await ClaudeCliCodeGenerator.TestConnection(_settings, cts.Token)
+                : await ClaudeAccount.TestConnection(_settings.ApiKey ?? string.Empty, cts.Token);
+
+            // A newer check (or a pass from the Settings dialog) has taken over.
+            if (version != _verifyVersion)
+                return;
+
+            if (result.Success)
+            {
+                Console.WriteLine($"Claude connection verified. {result.Message}");
+                MarkConnectionVerified();
+                return;
+            }
+
+            Console.Error.WriteLine($"Claude connection check failed: {result.Message}");
+            HandleConnectionFailure(result.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded; whoever superseded it reports the outcome.
+        }
+        finally
+        {
+            if (version == _verifyVersion)
+            {
+                _verifying = false;
+                _activityBar.Running = false;
+            }
+        }
+    }
+
+    private void MarkConnectionVerified()
+    {
+        _verifyCts?.Cancel();
+        _verifyVersion++;
+        _connectionVerified = true;
+
+        if (_verifying)
+        {
+            _verifying = false;
+            _activityBar.Running = false;
+        }
+
+        SetConnectionLocked(false);
+        ReflectConnectionState();
+    }
+
+    private void HandleConnectionFailure(string message)
+    {
+        if (_settings.Provider == ClaudeProvider.ClaudeCodeCli && ClaudeCliCodeGenerator.IsAuthenticationFailure(message))
+        {
+            // Same help as a failed generation: put a real terminal in front of the user so
+            // they can sign in themselves. The app never handles Claude credentials.
+            try
+            {
+                new ClaudeCliCodeGenerator(_settings).OpenSignInTerminal();
+                SetStatus("Claude sign-in needed. A terminal opened - sign in there, then open Settings and press Test Connection.", Theme.Warning);
+                return;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Could not open a sign-in terminal: {ex.Message}");
+            }
+        }
+
+        SetStatus($"Claude connection failed - {message}  Open Settings to fix it.", Theme.Danger);
+    }
+
+    /// <summary>True when a change in Settings could change whether Claude is reachable.</summary>
+    private static bool ConnectionSettingsChanged(AppSettings before, AppSettings after) =>
+        before.Provider != after.Provider ||
+        before.ActiveModel != after.ActiveModel ||
+        before.ClaudeCliPath != after.ClaudeCliPath ||
+        before.ApiKey != after.ApiKey;
+
     private void OpenSettings()
     {
+        var before = _settings;
         using var dialog = new SettingsForm(_settings);
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            // Cancelled. If the window is still locked, give it another go: the user may have
+            // signed in or fixed something outside the app while the dialog was open.
+            if (!_connectionVerified && !IsBusy)
+                _ = VerifyConnectionAsync();
+
             return;
+        }
 
         _settings = dialog.Result;
         Console.WriteLine($"Settings saved. Provider: {_settings.Provider}, model: {_settings.ActiveModel}.");
         RebuildAgent();
+
+        // Saving unrelated settings (a folder, the SpecForge path) must not lock the window and
+        // re-test; only a change that could affect the connection, or one that was never verified.
+        if (_connectionVerified && !ConnectionSettingsChanged(before, _settings))
+            return;
+
+        if (dialog.ConnectionVerified)
+            MarkConnectionVerified();
+        else if (!IsBusy)
+            _ = VerifyConnectionAsync();
     }
 
     protected override async void OnLoad(EventArgs e)
@@ -180,7 +342,10 @@ public partial class MainForm : Form
         if (!_settings.IsConfigured)
             Console.Error.WriteLine("Claude is not configured yet. Open Settings to choose how to connect.");
 
+        // Verify the connection while the preview engine starts; both take a few seconds.
+        var verification = VerifyConnectionAsync();
         await EnsureWebViewReady();
+        await verification;
     }
 
     // ---------------------------------------------------------------- layout
@@ -995,6 +1160,7 @@ public partial class MainForm : Form
 
     private void SetRunning(bool running)
     {
+        _running = running;
         _generateButton.Enabled = !running;
         _generateButton.Text = running ? "Generating..." : "Generate Test";
         _cancelButton.Enabled = running;
@@ -1156,6 +1322,7 @@ public partial class MainForm : Form
 
     private void SetRecordingUi(bool recording)
     {
+        _recordingUi = recording;
         _recordButton.Text = recording ? "Done" : "Record";
         _recordButton.Style = recording ? PillStyle.Primary : PillStyle.Outline;
         _generateButton.Enabled = !recording;

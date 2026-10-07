@@ -29,9 +29,15 @@ Install the CLI once:
 npm install -g @anthropic-ai/claude-code
 ```
 
-Then press **Test Connection**. Each generation consumes your normal Claude Code usage. If your
-login has expired, the app opens a terminal running `claude` so you can sign in; the app itself never
-sees or stores your Claude credentials.
+Each generation consumes your normal Claude Code usage. The app never sees or stores your Claude
+credentials.
+
+**The connection is checked every time the app starts.** Until it passes, every button except
+**Settings** is disabled, so an expired session shows up straight away rather than after you have
+recorded a whole scenario. It takes a few seconds and needs nothing from you when your login is good.
+If the login has expired, a terminal running `claude` opens for you to sign in; then open **Settings**
+and press **Test Connection** (or just close Settings, which checks again) and the window unlocks. If
+it fails for another reason, the status bar says why.
 
 **Anthropic API key** — paste a key from the Anthropic Console. It is encrypted with Windows DPAPI
 for your user account and stored in `%APPDATA%\PlaywrightAgentAI\settings.json`; it never touches the
@@ -165,5 +171,6 @@ Reading that file answers most "why did it generate *that*?" questions faster th
 | Output ignores your conventions | The solution link is missing or the folder has no recognisable tests |
 | Web preview unavailable | The WebView2 runtime is not installed |
 
-Generation typically takes 30–60 seconds on Opus. Switching to Sonnet in Settings is noticeably
-faster and cheaper, and is usually enough for straightforward scenarios.
+Generation typically takes 30–60 seconds. **Sonnet is the default**: it is faster and cheaper and is
+usually enough. Switch to Opus in Settings for a hard scenario, at the cost of time and usage. A model
+you have already chosen is kept; the default only applies to a new settings file.

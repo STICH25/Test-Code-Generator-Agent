@@ -44,6 +44,46 @@ public class PillButton : Button
         UseVisualStyleBackColor = false;
     }
 
+    private bool _locked;
+
+    /// <summary>
+    /// A hard lock that sits beside <see cref="Control.Enabled"/> rather than inside it. While
+    /// locked the button paints as disabled, shows an ordinary cursor, ignores hover and swallows
+    /// clicks, whatever Enabled says; unlocking returns it to exactly the state Enabled describes.
+    ///
+    /// This exists because buttons here are enabled and disabled from many places (running,
+    /// recording, the active tab, whether there is anything to insert...), so "disable everything
+    /// until the Claude connection is verified" done at each of those sites would leak the first
+    /// time another one re-enabled a button. A separate flag cannot be undone by any of them.
+    /// </summary>
+    [DefaultValue(false)]
+    public bool Locked
+    {
+        get => _locked;
+        set
+        {
+            if (_locked == value)
+                return;
+
+            _locked = value;
+            _hovered = false;
+            _pressed = false;
+            Cursor = value ? Cursors.Default : Cursors.Hand;
+            Invalidate();
+        }
+    }
+
+    /// <summary>Enabled and not locked: the only state in which the button should look or behave alive.</summary>
+    private bool Interactive => Enabled && !_locked;
+
+    protected override void OnClick(EventArgs e)
+    {
+        if (_locked)
+            return;
+
+        base.OnClick(e);
+    }
+
     [DefaultValue(PillStyle.Primary)]
     public PillStyle Style
     {
@@ -57,7 +97,7 @@ public class PillButton : Button
 
     protected override void OnMouseEnter(EventArgs e)
     {
-        _hovered = true;
+        _hovered = !_locked;
         Invalidate();
         base.OnMouseEnter(e);
     }
@@ -72,7 +112,7 @@ public class PillButton : Button
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        _pressed = true;
+        _pressed = !_locked;
         Invalidate();
         base.OnMouseDown(e);
     }
@@ -100,7 +140,7 @@ public class PillButton : Button
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         // Spotify's primary button lifts on hover; reproduce with a small inset.
-        var lift = _style == PillStyle.Primary && _hovered && !_pressed && Enabled ? 1 : 0;
+        var lift = _style == PillStyle.Primary && _hovered && !_pressed && Interactive ? 1 : 0;
         var bounds = new Rectangle(lift, lift, Width - 1 - lift * 2, Height - 1 - lift * 2);
         var radius = bounds.Height / 2;
 
@@ -128,7 +168,7 @@ public class PillButton : Button
         // An Outline button already has a visible border, so the focus ring would draw
         // right alongside it and read as a double border - only styles with no border of
         // their own (Primary, Ghost) need this as their sole focus indicator.
-        if (Focused && Enabled && border.A == 0)
+        if (Focused && Interactive && border.A == 0)
         {
             using var focusPen = new Pen(Theme.Mix(text, Theme.Page, 0.55), 1f) { DashStyle = DashStyle.Dot };
             using var focusPath = Theme.RoundedRect(Rectangle.Inflate(bounds, -4, -4), Math.Max(0, radius - 4));
@@ -138,7 +178,7 @@ public class PillButton : Button
 
     private void ResolveColors(out Color fill, out Color border, out Color text)
     {
-        if (!Enabled)
+        if (!Interactive)
         {
             fill = _style == PillStyle.Primary ? Theme.Elevated : Color.Transparent;
             border = _style == PillStyle.Outline ? Theme.Mix(Theme.Hairline, Theme.Page, 0.5) : Color.Transparent;
