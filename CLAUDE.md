@@ -49,6 +49,37 @@ into Playwright test code, written directly into a separate test-automation solu
    user presses **Insert**. Nothing is written during generation; the three tabs (Feature / Page
    Object / Steps) are a preview that Edit can change first.
 
+### The connection gate
+
+On startup every button except **Settings** is locked until a real call to Claude succeeds
+(`MainForm.VerifyConnectionAsync`, via `ClaudeCliCodeGenerator.TestConnection` or
+`ClaudeAccount.TestConnection`). The motive is the user's own: an expired session otherwise only
+surfaces *after* a recording, when the generation that follows fails. Verification is automatic, so a
+good login costs the user nothing; only a failure needs them. Tabs, the URL field and the pickers stay
+usable so the Log can still be read.
+
+- **The lock is `PillButton.Locked`, a flag beside `Enabled`, not a change to it.** Buttons are enabled
+  and disabled from about ten places (`SetRunning`, `SetRecordingUi`, `ShowOutputTab` re-enabling Edit,
+  `UpdateInsertButtonState`...), so gating at each site would leak the first time another one ran. A
+  locked button paints disabled, ignores hover, and swallows clicks; unlocking returns each button to
+  *its own* state (Cancel and Insert stay off when nothing is running or generated). `Control.Enabled`
+  is not virtual, so it cannot be overridden — do not try to fold the lock into it.
+- **Failure:** a bad model, an expired session or a missing CLI leaves the window locked with the reason
+  in the status bar. An expired *login* also opens the sign-in terminal (the app never handles Claude
+  credentials). Retry by opening Settings: Test Connection unlocks directly (`SettingsForm.ConnectionVerified`,
+  cleared when provider, key or model change, since a pass for the old choice means nothing for the new
+  one), and closing Settings while locked re-checks.
+- **Saving Settings only re-checks when something that could affect the connection changed**
+  (`ConnectionSettingsChanged`: provider, model, CLI path, API key). Re-locking the whole window for ten
+  seconds because someone changed a screenshots folder would be wrong. It also never re-checks while
+  generating or recording (`IsBusy`).
+- **Sonnet is the default model** (`AppSettings.CliModel`, `DefaultModel`) and first in the dropdown
+  (the dropdown falls back to the first entry). This only affects a new settings file. Beware
+  `SettingsForm.PopulateModels`: it once looked the selected model up in the *API* setting even for the
+  CLI provider, so every Test Connection silently reset the choice to the first entry.
+- Not covered yet: the session expiring *after* startup (e.g. while idle, or during a recording). The
+  gate only proves the connection at the moment it was checked.
+
 ### Two Claude providers
 
 `AppSettings.Provider` selects between them, and both implement `ITestCodeGenerator`:

@@ -82,8 +82,10 @@ public class ClaudeCliCodeGenerator : ITestCodeGenerator
     /// </summary>
     public static IReadOnlyList<ClaudeModel> AvailableModels { get; } =
     [
+        // Sonnet first: it is the default, and the Settings dropdown falls back to the first
+        // entry when the saved model is not in the list.
+        new("sonnet", "Sonnet (balanced, default)"),
         new("opus", "Opus (most capable)"),
-        new("sonnet", "Sonnet (balanced)"),
         new("haiku", "Haiku (fastest)")
     ];
 
