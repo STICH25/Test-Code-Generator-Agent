@@ -151,9 +151,9 @@ method for a page; the step definitions hold only assertions (they call page-obj
 value to settle before returning it. This split is the `new-automation-project` skill's
 `DynabyteHomePage`/`DynabyteHomeSteps` templates, copied into `PromptBuilder`'s contract text. The
 three pickers in the input card (Feature file / Page object / Step definitions) either pick an
-existing file to extend — the prompt then carries that file's full content and the writer overwrites
-exactly that path, with a `.bak` — or leave "New ..." to create one. A missing `Pages` folder is
-created on Insert.
+existing file to extend — the prompt then asks for **only the new material** and `ArtifactMerger`
+inserts it into that file's text (see "Writing into another repo") — or leave "New ..." to create
+one. A missing `Pages` folder is created on Insert.
 
 **`IsUsable` and `CanWriteGherkin` are independent, not a fallback chain** — a solution can be
 `CanWriteGherkin: true` and `IsUsable: false` at the same time. `IsUsable` only means "a plain
@@ -249,11 +249,33 @@ before theorising about a surprising tally. SpecForge targets net8.0; the machin
 
 ### Writing into another repo
 
-`SolutionWriter` backs up any file it is about to overwrite to a timestamped `.bak`, and refuses to
-write if the backup fails. The linked solution may not be under version control. Feature files are
-overwritten by design (that is how a scenario is appended); **step-definition files are never
-overwritten** — the model emits only *new* bindings, so overwriting would silently delete existing
-ones. The writer auto-suffixes instead.
+**No `.bak` files, and no "reproduce the whole file".** The earlier design told the model to
+reproduce a chosen target file in full and had the writer overwrite it (after a `.bak`). That cannot
+work for a large file: `FeatureFile.Source` / `StepDefinitionFile.Source` / `PageObjectFile.Source`
+are cut at 4000/5000 characters for the prompt, so the "reproduction" came back as just the new
+scenario (or the head of the file plus it) and Insert replaced a feature with dozens of scenarios by
+one. Now, for a chosen target:
+
+- `PromptBuilder` asks only for the *new* scenario(s) / members, and lists every existing scenario
+  title and page-object method (complete lists, not the truncated source) so the model reuses and
+  does not repeat them.
+- `ExplorationAgent.MergeIntoTarget` reads the file's **current text from disk** and calls
+  `ArtifactMerger`, which only inserts: `MergeFeature` appends scenario blocks whose titles are new
+  (dropping a repeated header/Background and anything before a `[truncated]` marker, and blocks with
+  no steps); `MergeCSharp` uses Roslyn to add members whose signature is not already there, missing
+  `using`s, and missing constructor statements, and skips any step whose keyword+pattern is already
+  bound in the target **or anywhere in `profile.StepBindings`** (the reuse rule, enforced as well as
+  prompted). The artifact's `Content` becomes the whole merged file, so the tabs, Edit and the
+  Run button all see what Insert will write.
+- If a merge is not possible (no class to merge into, a constructor the existing class lacks, or an
+  insertion that would stop the file parsing) the existing file is left byte-identical and the
+  generated code goes to a new file (`<Name>Additions.cs`, with the class renamed), plus a warning.
+- `SolutionWriter` still writes a target's content to its path, which is now a superset of what was
+  there; with **no** target, a name collision gets a numbered suffix for every kind (feature files
+  included) rather than overwriting.
+
+The linked solution may not be under version control, which is why the merge is insertion-only by
+construction rather than relying on a backup.
 
 ### Recording
 

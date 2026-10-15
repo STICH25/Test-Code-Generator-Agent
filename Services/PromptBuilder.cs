@@ -303,11 +303,18 @@ public partial class PromptBuilder
         if (targetFeature != null)
         {
             prompt.AppendLine($"TARGET FEATURE FILE: {targetFeature.FileName}");
-            prompt.AppendLine("Reproduce this file in full with your new scenario appended to it.");
-            prompt.AppendLine("Keep the existing Feature header, Background and every existing scenario unchanged.");
+            prompt.AppendLine("Return ONLY your new scenario(s) in this file - do not repeat the Feature header,");
+            prompt.AppendLine("the Background or any existing scenario. The application appends what you return to the");
+            prompt.AppendLine("file itself, so the existing scenarios are never at risk and never need reproducing.");
             prompt.AppendLine($"Name the feature file exactly: {targetFeature.FileName}");
             prompt.AppendLine();
-            prompt.AppendLine($"--- current contents of {targetFeature.FileName} ---");
+            prompt.AppendLine($"This file already has {targetFeature.Scenarios.Count} scenario(s). Do NOT reuse any of these titles:");
+
+            foreach (var scenario in targetFeature.Scenarios)
+                prompt.AppendLine($"  - {scenario.Name}");
+
+            prompt.AppendLine();
+            prompt.AppendLine($"--- start of {targetFeature.FileName}, for its wording and style only (it may be cut short) ---");
             prompt.AppendLine(targetFeature.Source);
             prompt.AppendLine();
         }
@@ -336,12 +343,14 @@ public partial class PromptBuilder
         if (targetStepDefinitions != null)
         {
             prompt.AppendLine($"TARGET STEP DEFINITIONS FILE: {targetStepDefinitions.FileName}");
-            prompt.AppendLine("Reproduce this file in full, adding only your genuinely new step method(s) to it.");
-            prompt.AppendLine("Keep every existing step method, using directive and attribute exactly as it is -");
-            prompt.AppendLine("do not remove, reword or reorder anything already there.");
-            prompt.AppendLine($"Name the class and file exactly: {targetStepDefinitions.ClassName} / {targetStepDefinitions.FileName}");
+            prompt.AppendLine($"Return a class named exactly {targetStepDefinitions.ClassName} that contains ONLY your genuinely");
+            prompt.AppendLine("new step method(s), plus any field the new methods need - not the existing methods. The");
+            prompt.AppendLine("application adds what you return to the file itself and skips anything that is already");
+            prompt.AppendLine("there, so reproducing the existing file is unnecessary and risks truncation.");
+            prompt.AppendLine("Include the using directives your new methods need.");
+            prompt.AppendLine($"File name: {targetStepDefinitions.FileName}");
             prompt.AppendLine();
-            prompt.AppendLine($"--- current contents of {targetStepDefinitions.FileName} ---");
+            prompt.AppendLine($"--- start of {targetStepDefinitions.FileName}, for its constructor and style only (it may be cut short) ---");
             prompt.AppendLine(targetStepDefinitions.Source);
             prompt.AppendLine();
         }
@@ -363,11 +372,25 @@ public partial class PromptBuilder
         if (targetPageObject != null)
         {
             prompt.AppendLine($"TARGET PAGE OBJECT FILE: {targetPageObject.FileName}");
-            prompt.AppendLine("Reproduce this file in full, adding your new action/query method(s) to it.");
-            prompt.AppendLine("Keep every existing selector, locator property and method exactly as it is.");
-            prompt.AppendLine($"Name the class and file exactly: {targetPageObject.ClassName} / {targetPageObject.FileName}");
+            prompt.AppendLine($"Return a class named exactly {targetPageObject.ClassName} that contains ONLY your new selectors,");
+            prompt.AppendLine("locator properties and action/query methods - not the existing ones. The application adds");
+            prompt.AppendLine("what you return to the file itself and skips anything that is already there, so");
+            prompt.AppendLine("reproducing the existing file is unnecessary and risks truncation.");
+            prompt.AppendLine("Include the using directives your new members need.");
+            prompt.AppendLine($"File name: {targetPageObject.FileName}");
             prompt.AppendLine();
-            prompt.AppendLine($"--- current contents of {targetPageObject.FileName} ---");
+
+            if (targetPageObject.Methods.Count > 0)
+            {
+                prompt.AppendLine("Methods this page object already has - call these from the steps instead of adding another:");
+
+                foreach (var method in targetPageObject.Methods)
+                    prompt.AppendLine($"  - {method}");
+
+                prompt.AppendLine();
+            }
+
+            prompt.AppendLine($"--- start of {targetPageObject.FileName}, for its constructor, selectors and style only (it may be cut short) ---");
             prompt.AppendLine(targetPageObject.Source);
             prompt.AppendLine();
         }

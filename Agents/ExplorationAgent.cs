@@ -138,6 +138,12 @@ public class ExplorationAgent
                 ApplyTarget(result, ArtifactKind.PageObject, targetPageObject?.Path);
                 ApplyTarget(result, ArtifactKind.StepDefinitions, targetStepDefinitions?.Path);
 
+                // The model returns only what is new for a chosen file; fold that into the real
+                // file here so what the tabs show, and what Insert writes, is the whole file.
+                MergeIntoTarget(result, ArtifactKind.Feature, targetFeature?.Path);
+                MergeIntoTarget(result, ArtifactKind.PageObject, targetPageObject?.Path);
+                MergeIntoTarget(result, ArtifactKind.StepDefinitions, targetStepDefinitions?.Path);
+
                 DescribeArtifacts(result);
                 await RunReuseCheck(result, cancellationToken);
                 return result;
@@ -346,6 +352,73 @@ public class ExplorationAgent
         {
             Console.Error.WriteLine($"Could not open a sign-in terminal: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Adds the generated material to the chosen file's current text on disk, never replacing it.
+    /// The model used to be asked to reproduce the whole file, but the prompt only carries the
+    /// start of a large one, so the "reproduction" was just the new scenario and Insert wrote
+    /// that over the real file. If a merge is not possible the existing file is left alone and
+    /// the generated code is written beside it as a new file instead.
+    /// </summary>
+    private void MergeIntoTarget(AgentResult result, ArtifactKind kind, string? targetPath)
+    {
+        if (targetPath == null)
+            return;
+
+        var artifact = result.Artifacts.FirstOrDefault(a => a.Kind == kind);
+        if (artifact == null)
+            return;
+
+        var name = Path.GetFileName(targetPath);
+        string existing;
+        try
+        {
+            existing = File.ReadAllText(targetPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not read {name} to merge into it: {ex.Message}");
+            result.Warnings.Add($"Could not read {name}, so the generated code will be written as a new file instead.");
+            artifact.TargetPath = null;
+            return;
+        }
+
+        var merge = kind == ArtifactKind.Feature
+            ? ArtifactMerger.MergeFeature(existing, artifact.Content)
+            : ArtifactMerger.MergeCSharp(existing, artifact.Content, _profile?.StepBindings);
+
+        if (merge.Fallback)
+        {
+            Console.Error.WriteLine($"Could not merge into {name}: {merge.Note} Writing it as a new file instead.");
+            result.Warnings.Add($"Could not merge into {name} ({merge.Note}) - the generated code will be written as a new file beside it.");
+            artifact.TargetPath = null;
+
+            if (kind != ArtifactKind.Feature)
+            {
+                var stem = Path.GetFileNameWithoutExtension(targetPath);
+                var cls = ArtifactMerger.RenameClass(artifact.Content, $"{stem}Additions");
+                artifact.Content = cls;
+                artifact.FileName = $"{stem}Additions.cs";
+            }
+
+            return;
+        }
+
+        artifact.Content = merge.Content;
+        artifact.FileName = name;
+        artifact.TargetPath = targetPath;
+
+        var what = kind switch
+        {
+            ArtifactKind.Feature => "scenario(s)",
+            ArtifactKind.PageObject => "page object member(s)",
+            _ => "step/member(s)"
+        };
+
+        Console.WriteLine(merge.Added > 0
+            ? $"Added {merge.Added} {what} to {name}; {merge.Skipped} already present, existing content untouched."
+            : $"Nothing new to add to {name} ({merge.Skipped} already present).");
     }
 
     private static void ApplyTarget(AgentResult result, ArtifactKind kind, string? targetPath)

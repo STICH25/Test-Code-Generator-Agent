@@ -133,14 +133,19 @@ dotnet test --filter "FullyQualifiedName~YourScenarioName"
 
 Your test solution may not be under version control, so writes are guarded:
 
-- Any file about to be overwritten is first copied to a timestamped `.bak`. If the backup cannot be
-  made, the write is refused.
-- Feature files are rewritten in full — that is how a new scenario is appended, and existing
-  scenarios are preserved.
-- **Step-definition files are never overwritten by accident.** Generation emits only genuinely new
-  bindings, so a same-named collision gets a numbered new file beside the old one. The one exception
-  is a file you explicitly pick in the *Step definitions* list: it is reproduced in full with the new
-  bindings added, after a `.bak` backup.
+- **A file you pick is extended, never rewritten.** When you choose an existing feature file, page
+  object or step-definitions file, Claude is asked for only the new scenario(s) and members, and the
+  application inserts them into the file's current text. What was already there is not touched, so a
+  file with hundreds of scenarios gets the new ones added at the end and keeps all the old ones. No
+  `.bak` files are created.
+- **Nothing that already exists is added again.** A scenario with the same title, a page-object
+  member or step method with the same signature, and a step whose wording is already bound anywhere
+  in your solution are skipped, so a re-run or an over-eager reply cannot create duplicates.
+- **A same-named new file never replaces an existing one.** If you left *New ...* selected and the
+  name is taken, the new file gets a numbered name beside the old one.
+- If the generated code cannot be merged safely (for example a step class that needs a constructor
+  the existing one does not have), the existing file is left as it is and the new code is written to
+  its own file, with a warning.
 - Existing step wordings are given to Claude and reuse is required wherever one fits, which keeps a
   BDD suite from filling up with near-duplicate steps.
 
