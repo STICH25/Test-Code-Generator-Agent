@@ -5,10 +5,11 @@ namespace PlaywrightAgentAI.Services;
 /// <summary>
 /// Writes generated artifacts into the linked solution.
 ///
-/// Files are written automatically, so the safety net matters: appending a scenario means
-/// rewriting an existing .feature file in full, and the target solution may not be under
-/// version control. Any file about to be overwritten is copied to a timestamped .bak
-/// first, so nothing the user wrote can be lost without a way back.
+/// Nothing here relies on a backup. A file the user chose to extend arrives already merged -
+/// the generated material has been inserted into its current text by <see cref="ArtifactMerger"/>,
+/// so overwriting it writes everything that was there plus the new code. Any other file is
+/// written beside what exists (numbered suffix) rather than over it, so no existing file is
+/// ever replaced by something that is not a superset of it. No .bak files are created.
 /// </summary>
 public static class SolutionWriter
 {
@@ -24,10 +25,9 @@ public static class SolutionWriter
 
                 if (!string.IsNullOrWhiteSpace(artifact.TargetPath))
                 {
-                    // An explicit target: the user picked this exact file from a dropdown,
-                    // and the prompt gave the model that file's full content to reproduce.
-                    // Safe to overwrite outright regardless of kind - the backup below is
-                    // the safety net, not a same-name coincidence to guard against.
+                    // An explicit target: the user picked this exact file from a dropdown, and
+                    // the content is that file's own text with the new material merged in, so
+                    // writing it back loses nothing.
                     path = artifact.TargetPath;
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 }
@@ -44,20 +44,18 @@ public static class SolutionWriter
                     Directory.CreateDirectory(directory);
                     path = Path.Combine(directory, SafeFileName(artifact.FileName));
 
-                    // A feature file is deliberately rewritten in full when no target was
-                    // chosen - that is the "new feature file" convention. Page objects and
-                    // step-definition files are different here: the model was not shown any
-                    // specific file's content in this branch, so a same-named collision is
-                    // accidental, not intentional, and blind-overwriting it could delete
-                    // methods or bindings the model never saw. Write beside it instead.
-                    if (artifact.Kind is ArtifactKind.StepDefinitions or ArtifactKind.PageObject && File.Exists(path))
+                    // With no target chosen, a same-named file is an accident of naming, not an
+                    // instruction to replace it: the generated text only holds the new material
+                    // and would drop everything already in that file. Write beside it instead.
+                    // (Feature files used to be rewritten in place here, back when appending a
+                    // scenario meant reproducing the whole file; the target dropdown replaced that.)
+                    if (File.Exists(path))
                     {
                         path = NextAvailable(path);
                         Console.WriteLine($"  {artifact.FileName} exists; writing to {Path.GetFileName(path)} instead");
                     }
                 }
 
-                BackUpIfPresent(path);
 
                 // CRLF so files match the rest of a Windows C# project.
                 File.WriteAllText(path, artifact.Content.ReplaceLineEndings());
@@ -83,25 +81,6 @@ public static class SolutionWriter
         ArtifactKind.StepDefinitions => profile.StepDefinitionsDirectory,
         _ => profile.TestDirectory
     };
-
-    private static void BackUpIfPresent(string path)
-    {
-        if (!File.Exists(path))
-            return;
-
-        var backup = $"{path}.{DateTime.Now:yyyyMMdd_HHmmss}.bak";
-
-        try
-        {
-            File.Copy(path, backup, overwrite: false);
-            Console.WriteLine($"  previous version saved as {Path.GetFileName(backup)}");
-        }
-        catch (Exception ex)
-        {
-            // Better to refuse the write than to destroy an unbacked-up file.
-            throw new IOException($"Refusing to overwrite {Path.GetFileName(path)} - could not create a backup: {ex.Message}", ex);
-        }
-    }
 
     /// <summary>Finds a free name beside an existing file: Foo.cs, Foo2.cs, Foo3.cs ...</summary>
     private static string NextAvailable(string path)
